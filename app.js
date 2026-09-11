@@ -154,7 +154,7 @@ function toast(msg, err = false) {
   el.textContent = msg; el.hidden = false;
   el.className = err ? 'err show' : 'show';
   clearTimeout(toastT);
-  toastT = setTimeout(() => { el.className = ''; setTimeout(() => (el.hidden = true), 350); }, err ? 3400 : 2000);
+  toastT = setTimeout(() => { el.className = ''; setTimeout(() => (el.hidden = true), 350); }, err ? 3800 : 2000);
 }
 
 function openSheet(html, onOpen) {
@@ -162,7 +162,7 @@ function openSheet(html, onOpen) {
   sh.innerHTML = '<div class="grab"></div>' + html;
   bd.hidden = sh.hidden = false;
   requestAnimationFrame(() => { bd.classList.add('show'); sh.classList.add('show'); });
-  bd.onclick = closeSheet;
+  bd.onclick = () => closeSheet();
   history.pushState({ sheet: true }, '');
   onOpen?.(sh);
 }
@@ -182,30 +182,30 @@ function route() {
   const [path, arg] = hash.replace(/^#\//, '').split('/');
   const name = !S.cfg.url ? 'setup' : (path || 'home');
   const view = routes[name] || routes.home;
-  $('#tabbar').hidden = !S.cfg.url || ['setup'].includes(name);
-  $$('#tabbar a').forEach((a) => a.classList.toggle('on',
-    a.dataset.tab === (name === 'home' ? 'home' : name.split('?')[0])));
+  const tab = { home: 'home', months: 'months', large: 'large', year: 'year' }[name];
+  $('#tabbar').hidden = !S.cfg.url || name === 'setup';
+  $$('#tabbar a').forEach((a) => a.classList.toggle('on', a.dataset.tab === tab));
   const el = $('#view');
   el.innerHTML = view(arg);
   el.classList.remove('fade'); void el.offsetWidth; el.classList.add('fade');
   bindView(name, arg);
   scrollTo(0, 0);
 }
-let currentRender = () => {};
 function renderIfCurrent() { route(); }
 addEventListener('hashchange', route);
 
 const backBtn = `<button class="back" onclick="history.back()">‹</button>`;
 
 /* ─── shared view fragments ────────────────────────────────────────────── */
-function fyPill() {
-  return `<button class="pill acc" data-act="fy">${esc(S.cfg.fyLabel || 'FY')}</button>`;
-}
+function fyPill() { return `<button class="pill acc" data-act="fy">${esc(S.cfg.fyLabel || 'FY')}</button>`; }
 function themeBtn() {
   const ic = { auto: '◐', light: '☀', dark: '☾' }[S.cfg.theme] || '◐';
   return `<button class="iconbtn" data-act="theme" title="Theme">${ic}</button>`;
 }
 function loadingCard() { return `<div class="spin"></div>`; }
+function manageBtn(section, label = 'Manage categories') {
+  return `<a class="btn ghost sm" href="#/manage/${section}">⚙&nbsp; ${label}</a>`;
+}
 
 /* ─── view: setup / onboarding ─────────────────────────────────────────── */
 routes.setup = () => `
@@ -242,16 +242,13 @@ function bindSetup() {
   };
 }
 
-/* ─── view: home ───────────────────────────────────────────────────────── */
+/* ─── view: home — whole-year position ─────────────────────────────────── */
 routes.home = () => {
-  const m = S.model, mi = fyMonthIdx();
-  const months = M.months();
-  const spent = m ? M.monthSpend(mi) : null;
-  const budget = m ? M.budget() : null;
-  const pct = budget ? Math.min(100, (spent / budget) * 100) : 0;
-  const over = budget && spent > budget;
-  const remaining = M.summaryVal('Remaining');
-  const savings = S.model?.variable?.savingsCells?.slice(0, mi).reduce((a, v) => a + (v || 0), 0);
+  const m = S.model;
+  const sv = (l) => M.summaryVal(l);
+  const income = sv('Total income'), expenses = sv('Total expenses');
+  const remaining = sv('Remaining'), savings = sv('Savings from monthly expenses');
+  const pct = income ? Math.min(100, (expenses / income) * 100) : 0;
 
   return `
   <div class="hdr">
@@ -269,32 +266,32 @@ routes.home = () => {
   ${!m ? loadingCard() : `
   <div class="card hero">
     <div style="display:flex;justify-content:space-between;align-items:baseline">
-      <span class="month">${esc(months[mi])}</span>
-      <span class="small mut">${S.loading ? 'refreshing…' : 'variable spend'}</span>
+      <span class="month">Remaining · ${esc(S.cfg.fyLabel)}</span>
+      <span class="small mut">${S.loading ? 'refreshing…' : 'full year'}</span>
     </div>
-    <div class="big num">${fmt(spent)} <small>/ ${fmtS(budget)}</small></div>
-    <div class="bar"><i class="${over ? 'over' : ''}" style="width:${pct}%"></i></div>
+    <div class="big num ${remaining < 0 ? 'bad' : ''}">${fmt(remaining)}</div>
+    <div class="bar"><i class="${pct >= 100 ? 'over' : ''}" style="width:${pct}%"></i></div>
     <div class="foot">
-      <span>${over ? `<b class="bad">${fmt(spent - budget)} over budget</b>` : `${fmt(budget - spent)} left this month`}</span>
+      <span>${fmt(expenses)} spent of ${fmt(income)}</span>
       <span>${Math.round(pct)}%</span>
     </div>
   </div>
 
   <div class="stats">
-    <div class="stat"><div class="l">FY remaining</div><div class="v num ${remaining >= 0 ? '' : 'bad'}">${fmt(remaining)}</div></div>
-    <div class="stat"><div class="l">Saved so far</div><div class="v num good">${fmt(savings)}</div></div>
+    <div class="stat"><div class="l">Total income</div><div class="v num">${fmt(income)}</div></div>
+    <div class="stat"><div class="l">Total expenses</div><div class="v num">${fmt(expenses)}</div></div>
+    <div class="stat wide"><div class="l">Savings from monthly expenses</div>
+      <div class="v num ${savings >= 0 ? 'good' : 'bad'}">${fmt(savings)}</div></div>
   </div>
-
-  <button class="btn" data-act="add" style="margin-bottom:14px">＋&nbsp; Add expense</button>
 
   <div class="card tight">
     <div class="row" style="border-bottom:1px solid var(--line)"><div class="grow kicker" style="padding:4px 0">Recent</div></div>
     ${S.logs.length ? S.logs.slice(0, 8).map((l) => `
       <div class="row">
-        <div class="dot">${esc((l.category || '?')[0])}</div>
+        <div class="dot">${esc(String(l.category || '?')[0])}</div>
         <div class="grow"><div class="t">${esc(l.category)}</div>
           <div class="s">${esc(l.month)}${l.note ? ' · ' + esc(l.note) : ''} · ${timeAgo(l.when)}</div></div>
-        <div class="amt num">${l.mode === 'set' ? '=' : '+'}${fmtS(l.amount)}</div>
+        <div class="amt num">${l.amount === '' || l.amount == null ? '' : (l.mode === 'set' ? '=' : '+') + fmtS(l.amount)}</div>
       </div>`).join('') : `<div class="empty">Entries you add will show up here</div>`}
   </div>`}`;
 };
@@ -328,7 +325,11 @@ routes.months = () => {
   <div class="mstrip">${strip}</div>
   <div class="matrix-wrap"><table class="matrix">
     <thead>${head}</thead><tbody>${body}${totals}${savings}</tbody>
-  </table></div>`;
+  </table></div>
+  <div class="gap"></div>
+  <button class="btn" data-act="add">＋&nbsp; Add expense</button>
+  <div class="gap"></div>
+  ${manageBtn('variable')}`;
 };
 
 /* ─── view: large expenses / investments ───────────────────────────────── */
@@ -339,11 +340,7 @@ routes.large = (arg) => {
   const rows = M.largeRows();
   return `
   <div class="hdr"><h1>Large & Investments</h1>${fyPill()}</div>
-  <div class="stats">
-    <div class="stat"><div class="l">FY total</div><div class="v num">${fmt(m.large?.totalYear)}</div></div>
-    <div class="stat"><div class="l">Categories</div><div class="v num">${rows.length}</div></div>
-  </div>
-  <button class="btn" data-act="addlarge" style="margin-bottom:14px">＋&nbsp; Add large expense</button>
+  <button class="btn" data-act="addlarge" style="margin-bottom:12px">＋&nbsp; Add large expense</button>
   <div class="card tight">
     ${rows.map((r) => {
       const spent = r.cells.reduce((a, c) => a + (c.v || 0), 0);
@@ -351,11 +348,14 @@ routes.large = (arg) => {
       return `<a class="row" href="#/large/${r.row}">
         <div class="dot">${esc(r.label[0])}</div>
         <div class="grow"><div class="t">${esc(r.label)}</div>
-          <div class="s">${notes ? notes + ' note' + (notes > 1 ? 's' : '') + ' · ' : ''}total ${fmt(r.total ?? spent)}</div></div>
+          <div class="s">${notes ? notes + ' note' + (notes > 1 ? 's' : '') + ' · ' : ''}planned ${fmt(r.total)}</div></div>
         <div class="amt num">${fmtS(spent)}</div><span class="chev">›</span>
       </a>`;
     }).join('') || '<div class="empty">No large-expense rows found in the sheet</div>'}
-  </div>`;
+  </div>
+  <div class="row" style="padding:2px 4px 14px"><div class="grow kicker">FY total</div>
+    <div class="amt num">${fmt(m.large?.totalYear)}</div></div>
+  ${manageBtn('large')}`;
 };
 
 function largeDetail(row) {
@@ -367,7 +367,7 @@ function largeDetail(row) {
   <div class="hdr">${backBtn}<h1 style="font-size:19px">${esc(r.label)}</h1>${fyPill()}</div>
   <div class="stats">
     <div class="stat"><div class="l">Spent</div><div class="v num">${fmt(spent)}</div></div>
-    <div class="stat"><div class="l">Planned (B col)</div><div class="v num">${fmt(r.total)}</div></div>
+    <div class="stat"><div class="l">Planned</div><div class="v num">${fmt(r.total)}</div></div>
   </div>
   <button class="btn" data-act="addlarge" data-row="${r.row}" style="margin-bottom:14px">＋&nbsp; Add to ${esc(r.label)}</button>
   <div class="card tight">
@@ -381,20 +381,12 @@ function largeDetail(row) {
   </div>`;
 }
 
-/* ─── view: year (funds, fixed, summary) ───────────────────────────────── */
+/* ─── view: year (funds + fixed, both editable) ────────────────────────── */
 routes.year = () => {
   const m = S.model;
   if (!m) return `<div class="hdr"><h1>Year</h1>${fyPill()}</div>` + loadingCard();
-  const sv = (l) => M.summaryVal(l);
   return `
   <div class="hdr"><h1>${esc(S.cfg.fyLabel)} overview</h1>${fyPill()}</div>
-
-  <div class="stats">
-    <div class="stat"><div class="l">Total income</div><div class="v num">${fmt(sv('Total income'))}</div></div>
-    <div class="stat"><div class="l">Total expenses</div><div class="v num">${fmt(sv('Total expenses'))}</div></div>
-    <div class="stat"><div class="l">Remaining</div><div class="v num ${sv('Remaining') >= 0 ? 'good' : 'bad'}">${fmt(sv('Remaining'))}</div></div>
-    <div class="stat"><div class="l">Emergency</div><div class="v num">${fmt(sv('Emergency'))}</div></div>
-  </div>
 
   <div class="card tight">
     <div class="row"><div class="grow kicker" style="padding:4px 0">Funds / income</div>
@@ -406,6 +398,8 @@ routes.year = () => {
         ${r.locked ? '<span class="chev small">fx</span>' : '<span class="chev">›</span>'}
       </div>`).join('')}
   </div>
+  ${manageBtn('funds', 'Manage income rows')}
+  <div class="gap"></div><div class="gap"></div>
 
   <div class="card tight">
     <div class="row"><div class="grow kicker" style="padding:4px 0">Fixed monthly expenses</div></div>
@@ -417,14 +411,50 @@ routes.year = () => {
         ${r.monthlyLocked ? '<span class="chev small">fx</span>' : '<span class="chev">›</span>'}
       </div>`).join('')}
   </div>
+  ${manageBtn('fixed', 'Manage fixed expenses')}
+  <div class="gap"></div><div class="gap"></div>
 
   <div class="card tight">
-    <div class="row"><div class="grow kicker" style="padding:4px 0">Sheet</div></div>
     <a class="row" href="https://docs.google.com/spreadsheets/d/${esc(S.cfg.fyId)}" target="_blank" rel="noopener">
       <div class="dot" style="background:var(--good-soft);color:var(--good)">▤</div>
       <div class="grow"><div class="t">Open in Google Sheets</div>
         <div class="s">${esc(m.fy?.name || '')}</div></div><span class="chev">↗</span></a>
   </div>`;
+};
+
+/* ─── view: manage categories (shared by all four sections) ────────────── */
+const SECTIONS = {
+  variable: { title: 'Variable categories', noun: 'category',
+              rows: () => M.varRows(), sub: 'Monthly Variable Expenses' },
+  large:    { title: 'Large categories', noun: 'category',
+              rows: () => M.largeRows(), sub: 'Large expenses / Investments' },
+  funds:    { title: 'Income rows', noun: 'row',
+              rows: () => S.model?.funds?.rows || [], sub: 'Funds' },
+  fixed:    { title: 'Fixed expenses', noun: 'row',
+              rows: () => S.model?.fixed || [], sub: 'Monthly Fixed Expenses' },
+};
+
+routes.manage = (section) => {
+  const cfg = SECTIONS[section];
+  if (!cfg) return `<div class="hdr">${backBtn}<h1>Unknown section</h1></div>`;
+  if (!S.model) return `<div class="hdr">${backBtn}<h1>${cfg.title}</h1></div>` + loadingCard();
+  const rows = cfg.rows();
+  return `
+  <div class="hdr">${backBtn}<h1 style="font-size:20px">${cfg.title}</h1></div>
+  <p class="small mut" style="margin:-8px 0 16px">Edits go straight into the “${esc(cfg.sub)}” block of your sheet. Totals and formulas adjust themselves.</p>
+  <div class="card tight">
+    ${rows.map((r) => `
+      <div class="row mrow">
+        <div class="grow"><div class="t">${esc(r.label)}</div>
+          <div class="s">row ${r.row}</div></div>
+        <button class="pill" data-act="rename" data-section="${section}" data-row="${r.row}" data-label="${esc(r.label)}">Rename</button>
+        <button class="pill" data-act="delrow" data-section="${section}" data-row="${r.row}" data-label="${esc(r.label)}"
+          style="color:var(--bad)">Remove</button>
+      </div>`).join('') || `<div class="empty">Nothing here yet</div>`}
+  </div>
+  <button class="btn" data-act="addrow" data-section="${section}">＋&nbsp; Add ${cfg.noun}</button>
+  <div class="gap"></div>
+  <p class="small mut center">Removing a ${cfg.noun} deletes its whole row — including every month’s amount and note. This can’t be undone from the app, but Google Sheets keeps version history.</p>`;
 };
 
 /* ─── view: settings ───────────────────────────────────────────────────── */
@@ -454,9 +484,9 @@ routes.settings = () => `
     <div class="gap"></div>
     <button class="btn sm danger" data-act="reset">Sign out (clear this device)</button>
   </div>
-  <p class="center small mut">Kosh v1 · data lives in your Google Sheet<br>code: github.com/${'ankit-icici'}/kosh</p>`;
+  <p class="center small mut">Kosh · data lives in your Google Sheet<br>github.com/ankit-icici/kosh</p>`;
 
-/* ─── bottom sheets ────────────────────────────────────────────────────── */
+/* ─── bottom sheets: entry ─────────────────────────────────────────────── */
 function addExpenseSheet(pre = {}) {
   const months = M.months(), mi = pre.month ?? fyMonthIdx();
   const cats = M.varRows();
@@ -600,6 +630,44 @@ function fixedEditSheet(row, col, label, val) {
   });
 }
 
+/* ─── bottom sheets: category management ───────────────────────────────── */
+function nameSheet({ title, sub, value = '', cta, onSave }) {
+  openSheet(`
+    <h2>${esc(title)}</h2><div class="sub">${esc(sub)}</div>
+    <div class="field"><label>Name</label>
+      <input id="nm-val" value="${esc(value)}" placeholder="e.g. Gifts & donations" autocapitalize="sentences"></div>
+    <button class="btn" id="nm-go">${esc(cta)}</button>
+  `, (sh) => {
+    const input = $('#nm-val', sh);
+    input.focus(); input.select?.();
+    const go = () => {
+      const v = input.value.trim();
+      if (!v) return toast('Name can’t be empty', true);
+      closeSheet(); onSave(v);
+    };
+    $('#nm-go', sh).onclick = go;
+    input.onkeydown = (e) => { if (e.key === 'Enter') go(); };
+  });
+}
+
+function confirmSheet({ title, body, danger = 'Remove', onYes }) {
+  openSheet(`
+    <h2>${esc(title)}</h2><div class="sub">${esc(body)}</div>
+    <button class="btn danger" id="cf-yes">${esc(danger)}</button>
+    <div class="gap"></div>
+    <button class="btn ghost" id="cf-no">Cancel</button>
+  `, (sh) => {
+    $('#cf-yes', sh).onclick = () => { closeSheet(); onYes(); };
+    $('#cf-no', sh).onclick = () => closeSheet();
+  });
+}
+
+function switchFY(id, label) {
+  S.cfg.fyId = id; S.cfg.fyLabel = label; saveCfg();
+  S.model = cachedModel(id); S.logs = [];
+  renderIfCurrent(); refresh(!!S.model);
+}
+
 function fyPickerSheet() {
   openSheet(`
     <h2>Financial year</h2><div class="sub">Each FY is its own Google Sheet</div>
@@ -617,13 +685,9 @@ function fyPickerSheet() {
   });
 }
 
-function switchFY(id, label) {
-  S.cfg.fyId = id; S.cfg.fyLabel = label; saveCfg();
-  S.model = cachedModel(id); S.logs = [];
-  renderIfCurrent(); refresh(!!S.model);
-}
+/* ─── write helpers ────────────────────────────────────────────────────── */
 
-/* write helper: optimistic update + outbox on failure */
+/* amount writes: optimistic, queued to the outbox if the network fails */
 async function submitWrite(action, params, label, optimistic, extra) {
   closeSheet();
   optimistic?.();
@@ -635,7 +699,7 @@ async function submitWrite(action, params, label, optimistic, extra) {
     toast('Saved ✓');
     refresh(true);
   } catch (e) {
-    if (/token|formula|Bad|Unknown/i.test(String(e.message))) {
+    if (/token|formula|Bad|Unknown|required|section/i.test(String(e.message))) {
       toast(e.message, true); refresh(true);
     } else {
       queueWrite(action, params, label);
@@ -645,14 +709,29 @@ async function submitWrite(action, params, label, optimistic, extra) {
   }
 }
 
+/* structural writes: never queued — row numbers would go stale.
+   The script returns the rebuilt model so the app re-syncs immediately. */
+async function structuralWrite(action, params, okMsg) {
+  toast('Saving…');
+  try {
+    const model = await api(action, { fyId: S.cfg.fyId, ...params });
+    S.model = model;
+    store.set('model.' + S.cfg.fyId, model);
+    toast(okMsg);
+    renderIfCurrent();
+  } catch (e) {
+    toast(e.name === 'AbortError' ? 'Timed out — nothing was changed' : e.message, true);
+  }
+}
+
 /* ─── event binding per view ───────────────────────────────────────────── */
-function bindView(name) {
+function bindView(name, arg) {
   if (name === 'setup') return bindSetup();
 
   $('#view').onclick = (e) => {
-    const act = e.target.closest('[data-act]');
     const cell = e.target.closest('[data-cell]');
     if (cell) { const [row, mi] = cell.dataset.cell.split(':').map(Number); return editCellSheet(row, mi, false); }
+    const act = e.target.closest('[data-act]');
     if (!act) return;
     const a = act.dataset;
     switch (a.act) {
@@ -666,18 +745,47 @@ function bindView(name) {
       case 'addlarge': return addLargeSheet(a.row ? +a.row : undefined);
       case 'editcell': return editCellSheet(+a.row, +a.month, a.large === '1');
       case 'fixed': return fixedEditSheet(+a.row, a.col, a.label, a.val === '' ? null : +a.val);
+
+      /* category management */
+      case 'addrow': {
+        const cfg = SECTIONS[a.section];
+        return nameSheet({
+          title: `New ${cfg.noun}`, sub: `Added to the end of “${cfg.sub}” in your sheet`,
+          value: '', cta: 'Add to sheet',
+          onSave: (label) => structuralWrite('addRow', { section: a.section, label }, `Added “${label}”`),
+        });
+      }
+      case 'rename': {
+        const cfg = SECTIONS[a.section];
+        return nameSheet({
+          title: 'Rename', sub: `Currently “${a.label}”`, value: a.label, cta: 'Save name',
+          onSave: (label) => structuralWrite('renameRow', { section: a.section, row: +a.row, label }, `Renamed to “${label}”`),
+        });
+      }
+      case 'delrow': {
+        const cfg = SECTIONS[a.section];
+        return confirmSheet({
+          title: `Remove “${a.label}”?`,
+          body: `This deletes the whole row from your sheet, including every month’s amount${a.section === 'large' ? ' and note' : ''}. Totals will re-calculate.`,
+          danger: `Remove ${cfg.noun}`,
+          onYes: () => structuralWrite('deleteRow', { section: a.section, row: +a.row }, `Removed “${a.label}”`),
+        });
+      }
+
       case 'sync': return flushOutbox();
       case 'hardrefresh': toast('Refreshing…'); return refresh();
       case 'refys': return loadFYs().then(() => { renderIfCurrent(); toast('FY list updated'); });
       case 'testconn': {
         S.cfg.url = $('#st-url').value.trim(); S.cfg.token = $('#st-token').value.trim(); saveCfg();
-        return api('ping').then(() => toast('Connected ✓')).catch((err) => toast(err.message, true));
+        return api('ping').then(() => { toast('Connected ✓'); refresh(true); })
+                          .catch((err) => toast(err.message, true));
       }
-      case 'reset': {
-        if (!confirm('Clear the connection and cached data on this device? Your sheet is untouched.')) return;
-        localStorage.clear(); location.hash = '#/'; location.reload();
-        return;
-      }
+      case 'reset': return confirmSheet({
+        title: 'Sign out of this device?',
+        body: 'Clears the saved connection and cached figures here. Your Google Sheet is untouched.',
+        danger: 'Sign out',
+        onYes: () => { localStorage.clear(); location.hash = '#/'; location.reload(); },
+      });
     }
   };
 
@@ -690,9 +798,8 @@ function bindView(name) {
   }
 
   if (name === 'months') {
-    // auto-scroll the matrix to the current month
-    const wrap = $('.matrix-wrap');
-    const cur = $('.matrix thead th.cur');
+    // park the matrix so the current month sits at the right edge, history to its left
+    const wrap = $('.matrix-wrap'), cur = $('.matrix thead th.cur');
     if (wrap && cur) wrap.scrollLeft = Math.max(0, cur.offsetLeft + cur.offsetWidth - wrap.clientWidth + 24);
   }
 }

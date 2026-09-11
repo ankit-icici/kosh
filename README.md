@@ -44,10 +44,13 @@ into FY28 = duplicate the sheet template with that name. Nothing to redeploy.
 
 ## Features
 
-- 🏠 **Home** — current month spend vs budget, one-tap add expense, recent entries
+- 🏠 **Home** — whole-year position: total income, total expenses, savings from monthly
+  expenses, remaining — plus recent entries
 - ▦ **Months** — every category × every month of the FY in one matrix (tap any cell to edit)
 - ◈ **Large** — investments & big-ticket items, each amount can carry a note
-- ◷ **Year** — funds, fixed expenses (editable), FY summary
+- ◷ **Year** — funds/income and fixed monthly expenses, all editable
+- ⚙ **Manage categories** — rename, remove or add a row in any of the four sections;
+  the script edits the sheet structurally and Google Sheets re-points every SUM itself
 - Dark / light / auto theme, offline queue for entries, works fully installed
 
 ## Continuing development (with or without Claude)
@@ -59,7 +62,8 @@ Everything needed to keep building lives in this repo + your Google account:
 3. Backend changes: edit the script at script.google.com → Deploy → *Manage deployments*
    → edit → new version. The URL stays the same.
 4. The API contract between app and script is in `apps-script/Code.gs` (actions:
-   `ping`, `fys`, `get`, `addVariable`, `addLarge`, `setNote`, `setValue`, `log`).
+   `ping`, `fys`, `get`, `addVariable`, `addLarge`, `setNote`, `setValue`, `log`,
+   `addRow`, `renameRow`, `deleteRow`).
 
 No local state matters: a phone can be wiped and reconnected with just the script URL
 and token.

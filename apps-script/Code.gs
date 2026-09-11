@@ -34,7 +34,7 @@ var KNOWN_FYS = {
   'FY27': '16Vi-MFXjRknsbupGWVo5cueU_2i93LPST34Jhyo-NLo'
 };
 
-var VERSION = '1.0.0';
+var VERSION = '1.1.0';
 var MONTH_COL_START = 4;   // column D
 var MONTH_COUNT = 12;      // D..O = Apr..Mar
 var SCAN_ROWS = 80;        // how many rows to scan for sections
@@ -64,6 +64,9 @@ function doPost(e) {
       case 'setNote':     out = setNote(req); break;
       case 'setValue':    out = setValue(req); break;
       case 'log':         out = readLog(req); break;
+      case 'addRow':      out = addRow(req); break;
+      case 'renameRow':   out = renameRow(req); break;
+      case 'deleteRow':   out = deleteRowAction(req); break;
       default: return respond({ ok: false, error: 'Unknown action: ' + req.action });
     }
     return respond({ ok: true, data: out });
@@ -307,6 +310,119 @@ function readLog(req) {
              mode: v[5], note: v[6], prev: v[7], value: v[8] };
   }).reverse();
   return { entries: entries };
+}
+
+// ─── structural edits: add / rename / delete category rows ──────────────────
+/**
+ * Locate each section's first and last *category* row (1-based, inclusive).
+ * Rows with a blank label (spacers, the repeated month header) are skipped.
+ */
+function sections(sheet) {
+  var colA = sheet.getRange(1, 1, SCAN_ROWS, 1).getValues()
+    .map(function (r) { return String(r[0] || '').trim(); });
+  function find(txt) {
+    for (var i = 0; i < colA.length; i++)
+      if (colA[i].toLowerCase() === txt.toLowerCase()) return i + 1;
+    return -1;
+  }
+  // stopRe: label that ends the block. stopOnBlank: does an empty row end it?
+  function block(headerRow, stopRe, stopOnBlank) {
+    if (headerRow < 0) return null;
+    var first = headerRow + 1, last = first - 1;
+    for (var r = first; r <= SCAN_ROWS; r++) {
+      var L = colA[r - 1];
+      if (!L) { if (stopOnBlank) break; continue; }   // large/variable have spacer rows
+      if (stopRe && stopRe.test(L)) break;
+      last = r;
+    }
+    return { first: first, last: last };
+  }
+  return {
+    funds:    block(find('Funds'), /^total$/i, true),
+    fixed:    block(find('Monthly Fixed Expenses (known)'), null, true),
+    variable: block(find('Monthly Variable Expenses (known)'), /^total known/i, false),
+    large:    block(find('Large expenses/Investments'), /^total unknown/i, false)
+  };
+}
+
+/**
+ * Add a category at the end of a section.
+ *
+ * The new row is inserted *inside* the existing block (not after it) so that
+ * every SUM range in the sheet — including the cross-section totals — expands
+ * on its own. The old last row is then copied up into the gap and the trailing
+ * row is repurposed, which leaves the new category visually last without ever
+ * rewriting one of your formulas.
+ */
+function addRow(req) {
+  var label = String(req.label || '').trim();
+  if (!label) throw new Error('Name is required');
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var o = openFY(req.fyId), sheet = o.sheet;
+    var sec = sections(sheet)[req.section];
+    if (!sec) throw new Error('Unknown section: ' + req.section);
+    if (sec.last < sec.first) throw new Error('That section is empty — add the first row in the sheet');
+
+    var width = MONTH_COL_START - 1 + MONTH_COUNT;
+    var last = sec.last;
+
+    sheet.insertRowBefore(last);                                   // blank row lands at `last`
+    sheet.getRange(last + 1, 1, 1, width)
+         .copyTo(sheet.getRange(last, 1, 1, width));               // old last row moves up
+    var target = sheet.getRange(last + 1, 1, 1, width);            // repurpose the trailing row
+    sheet.getRange(last + 1, 3, 1, MONTH_COUNT + 1).clearContent(); // C..O
+    target.clearNote();
+    if (!sheet.getRange(last + 1, 2).getFormula())                 // keep B only if it's a formula
+      sheet.getRange(last + 1, 2).clearContent();
+    sheet.getRange(last + 1, 1).setValue(label);
+
+    SpreadsheetApp.flush();
+    appendLog(o.ss, [new Date(), req.section, label, '—', '', 'add-category', '', '', '']);
+    return getModel(req.fyId);
+  } finally { lock.releaseLock(); }
+}
+
+function renameRow(req) {
+  var label = String(req.label || '').trim();
+  if (!label) throw new Error('Name is required');
+  var o = openFY(req.fyId), sheet = o.sheet;
+  var cell = sheet.getRange(Number(req.row), 1);
+  var prev = String(cell.getValue() || '');
+  cell.setValue(label);
+  SpreadsheetApp.flush();
+  appendLog(o.ss, [new Date(), req.section || '', prev + ' → ' + label, '—', '', 'rename', '', '', '']);
+  return getModel(req.fyId);
+}
+
+/**
+ * Delete a category row. Google Sheets shrinks the SUM ranges that covered it,
+ * so totals stay correct. Refuses to remove the last row of a section, which
+ * would leave those ranges with nothing to point at.
+ */
+function deleteRowAction(req) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var o = openFY(req.fyId), sheet = o.sheet;
+    var sec = sections(sheet)[req.section];
+    if (!sec) throw new Error('Unknown section: ' + req.section);
+    var row = Number(req.row);
+    if (row < sec.first || row > sec.last) throw new Error('That row is not in this section');
+
+    var labels = sheet.getRange(sec.first, 1, sec.last - sec.first + 1, 1).getValues()
+      .map(function (r) { return String(r[0] || '').trim(); })
+      .filter(function (s) { return s; });
+    if (labels.length <= 1) throw new Error('Can\u2019t remove the only category in a section');
+
+    var label = String(sheet.getRange(row, 1).getValue() || '');
+    sheet.deleteRow(row);
+    SpreadsheetApp.flush();
+    appendLog(o.ss, [new Date(), req.section, label, '—', '', 'delete-category', '', '', '']);
+    return getModel(req.fyId);
+  } finally { lock.releaseLock(); }
 }
 
 function monthName(sheet, monthIdx) {

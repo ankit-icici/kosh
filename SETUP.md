@@ -40,3 +40,14 @@ Open the app → FY pill → *Re-scan* (in Settings) — it appears automaticall
 
 script.google.com → your project → edit → **Deploy → Manage deployments → ✏️ →
 Version: New version → Deploy**. URL stays the same; the app needs no change.
+
+## Updating the script when the app gains backend features
+
+The app tells you when it needs a newer script (actions come back as
+"Unknown action"). To update:
+
+1. script.google.com → your Kosh project → select all in `Code.gs` → paste the new version
+   (keep your own `SHARED_TOKEN` on line 29) → save
+2. **Deploy → Manage deployments → ✏️ → Version: New version → Deploy**
+
+The web app URL never changes, so the app needs no reconfiguring.
