@@ -178,7 +178,7 @@ const M = {
   rowSpent: (r) => r.cells.reduce((a, c) => a + (c.v || 0), 0),
 };
 
-const BUILD = '2026-09-11.9';
+const BUILD = '2026-09-11.10';
 
 /* ─── UI primitives: toast + bottom sheet ──────────────────────────────── */
 let toastT;
