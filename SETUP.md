@@ -1,53 +1,53 @@
-# One-time setup (≈5 minutes)
+# Setting Kosh up
 
-## 1 · Deploy the Apps Script (your Google account)
+## 1 · Deploy the Apps Script (once)
 
-1. Open **script.google.com** while signed into the Google account that has your
-   FY sheets (the one that owns *FY27 Planning_Aug 26*).
-2. **New project** → delete the placeholder code → paste all of
+1. Sign in to the Google account that owns your FY sheet, open **script.google.com**.
+2. **New project** → delete the placeholder → paste all of
    [`apps-script/Code.gs`](apps-script/Code.gs).
-3. At the top of the file, change `SHARED_TOKEN` to your own secret — any long
-   random text (treat it like a password; don't commit it anywhere).
-4. Name the project "Kosh" (top-left).
-5. **Deploy → New deployment** → gear icon → **Web app**:
-   - Description: `kosh v1`
-   - **Execute as: Me**
-   - **Who has access: Anyone**
-6. Click **Deploy** → Google asks you to authorize → *Advanced → Go to Kosh
-   (unsafe)* → Allow. (It's your own script; "unsafe" just means unreviewed by Google.)
-7. Copy the **Web app URL** (ends in `/exec`).
+3. Change `SHARED_TOKEN` near the top to your own long random secret. Treat it
+   like a password; don't commit it anywhere.
+4. **Deploy → New deployment** → gear → **Web app**:
+   - Execute as: **Me**
+   - Who has access: **Anyone**
+5. **Deploy** → authorise (*Advanced → Go to … (unsafe) → Allow* — it's your own
+   unreviewed script) → copy the **Web app URL**, ending in `/exec`.
 
-> "Anyone" only means anyone *with the URL and your token* can call it — the URL is
-> unguessable and every request is checked against your token. Your sheet itself
-> stays private.
+> "Anyone" means anyone *with the URL and your token*. The URL contains a
+> ~70-character random id, and every request is rejected without the token.
+> Your sheet stays private.
 
 ## 2 · Connect the app
 
-1. On your phone, open **https://ankit-icici.github.io/kosh/**
-2. Paste the Web app URL and your token → **Connect**.
+Open **https://ankit-icici.github.io/kosh/**, paste the URL and token, Connect.
 
-## 3 · Install to home screen
+## 3 · Install to the home screen
 
-- **iPhone (Safari):** Share button → *Add to Home Screen*.
-- **Android (Chrome):** ⋮ menu → *Add to Home screen / Install app*.
+- **iPhone / Safari:** Share → *Add to Home Screen*
+- **Android / Chrome:** ⋮ → *Install app*
 
-## New financial year
+The icon is baked in at install time — after an icon change, remove and re-add it.
 
-Duplicate your sheet template, name it like `FY28 Planning`, keep the same layout.
-Open the app → FY pill → *Re-scan* (in Settings) — it appears automatically.
+## Starting a new financial year
 
-## Updating the backend later
+Either works; the app discovers both.
 
-script.google.com → your project → edit → **Deploy → Manage deployments → ✏️ →
-Version: New version → Deploy**. URL stays the same; the app needs no change.
+**As a tab (what this sheet does):** right-click the `FY27` tab → **Duplicate** →
+rename it `FY28` → clear columns D–O. Then in the app: Settings → *Re-scan Drive
+for FY sheets*. Switch years with the FY pill at the top.
 
-## Updating the script when the app gains backend features
+**As a separate file:** name it so it contains `FY28` and `Planning`.
 
-The app tells you when it needs a newer script (actions come back as
-"Unknown action"). To update:
+The year must appear as `FY28` in the tab or file name, and the layout (section
+headings in column A, months in D–O) must stay the same.
 
-1. script.google.com → your Kosh project → select all in `Code.gs` → paste the new version
-   (keep your own `SHARED_TOKEN` on line 29) → save
-2. **Deploy → Manage deployments → ✏️ → Version: New version → Deploy**
+## Updating the script later
 
-The web app URL never changes, so the app needs no reconfiguring.
+When the app gains a feature that needs the backend, unknown actions come back
+as errors. To update:
+
+1. script.google.com → your project → select all → paste the new `Code.gs`,
+   **keeping your own `SHARED_TOKEN` line** → save.
+2. **Deploy → Manage deployments → ✏️ → Version: New version → Deploy.**
+
+The web app URL never changes, so nothing needs reconfiguring on your phone.
