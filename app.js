@@ -300,11 +300,13 @@ routes.months = () => {
       <div class="m">${esc(mm)}</div>
       <div class="v num">${fmtS(M.monthSpend(i))}</div>
     </div>`).join('');
-  const head = `<tr><th class="rowhead">Category</th><th>Budget</th>${months.map((mm, i) =>
+  const head = `<tr><th class="rowhead">Category</th><th>Planned</th>${months.map((mm, i) =>
     `<th class="${i === mi ? 'cur' : ''}">${esc(mm)}</th>`).join('')}</tr>`;
   const body = rows.map((r) => `<tr>
       <td class="rowhead">${esc(r.label)}</td>
-      <td class="num mut">${fmtS(r.monthly)}</td>
+      <td class="num plancell" data-act="plan" data-row="${r.row}" data-col="C"
+          data-label="${esc(r.label)}" data-val="${r.monthly ?? ''}"
+          data-fx="${r.monthlyLocked ? 1 : 0}">${fmtS(r.monthly)}</td>
       ${r.cells.map((v, i) => `<td class="num ${i === mi ? 'cur' : ''} ${!v ? 'zero' : ''}"
          data-cell="${r.row}:${i}">${fmtS(v || 0)}</td>`).join('')}
     </tr>`).join('');
@@ -351,10 +353,13 @@ routes.large = (arg) => {
   return `
   <div class="hdr"><h1>Large & Investments</h1>${fyPill()}</div>
   <div class="stats">
+    <div class="stat"><div class="l">Planned for the year</div>
+      <div class="v num">${fmt(M.largePlanned())}</div><div class="c">sum of the plans below</div></div>
     <div class="stat"><div class="l">Spent so far</div>
       <div class="v num">${fmt(M.largeSpent())}</div><div class="c">actual, all categories</div></div>
-    <div class="stat"><div class="l">Planned for the year</div>
-      <div class="v num">${fmt(M.largePlanned())}</div><div class="c">column B in the sheet</div></div>
+    <div class="stat wide"><div class="l">Left for the year</div>
+      <div class="v num ${M.largePlanned() - M.largeSpent() < 0 ? 'bad' : ''}">${fmt(M.largePlanned() - M.largeSpent())}</div>
+      <div class="c">planned minus spent</div></div>
   </div>
   <button class="btn" data-act="addlarge" style="margin-bottom:12px">＋&nbsp; Add large expense</button>
   <div class="card tight">
@@ -368,9 +373,9 @@ routes.large = (arg) => {
           <div class="s">${notes ? notes + ' note' + (notes > 1 ? 's' : '') : '&nbsp;'}</div></div>
         <div class="rightcol">
           <div class="amt num">${fmtS(spent)}</div>
-          ${planned > 0
-            ? `<div class="plan num">plan ${fmtS(planned)}</div>`
-            : `<div class="plan none">no plan</div>`}
+          <button class="plan num ${planned > 0 ? '' : 'none'}" data-act="plan" data-row="${r.row}"
+            data-label="${esc(r.label)}" data-val="${planned ?? ''}" data-fx="${r.totalLocked ? 1 : 0}"
+          >${planned > 0 ? 'plan ' + fmtS(planned) : 'set plan'}</button>
         </div><span class="chev">›</span>
       </a>`;
     }).join('') || '<div class="empty">No large-expense rows found in the sheet</div>'}
@@ -387,9 +392,13 @@ function largeDetail(row) {
   <div class="hdr">${backBtn}<h1 style="font-size:19px">${esc(r.label)}</h1>${fyPill()}</div>
   <div class="stats">
     <div class="stat"><div class="l">Spent so far</div><div class="v num">${fmt(spent)}</div></div>
-    <div class="stat"><div class="l">Planned</div>
+    <div class="stat" data-act="plan" data-row="${r.row}" data-label="${esc(r.label)}"
+         data-val="${r.total ?? ''}" data-fx="${r.totalLocked ? 1 : 0}" style="cursor:pointer">
+      <div class="l">Planned <span style="color:var(--acc-ink)">· edit</span></div>
       <div class="v num">${r.total > 0 ? fmt(r.total) : '—'}</div>
-      ${r.total > 0 ? `<div class="c">${spent > r.total ? fmt(spent - r.total) + ' over' : fmt(r.total - spent) + ' left'}</div>` : ''}</div>
+      <div class="c">${r.total > 0
+        ? (spent > r.total ? fmt(spent - r.total) + ' over' : fmt(r.total - spent) + ' left')
+        : 'tap to set a plan'}</div></div>
   </div>
   <button class="btn" data-act="addlarge" data-row="${r.row}" style="margin-bottom:14px">＋&nbsp; Add to ${esc(r.label)}</button>
   <div class="card tight">
@@ -637,10 +646,14 @@ function editCellSheet(row, month, isLarge) {
   });
 }
 
-function fixedEditSheet(row, col, label, val, isFormula) {
+function fixedEditSheet(row, col, label, val, isFormula, kind) {
+  const what = kind === 'plan'
+    ? (col === 'C' ? 'Planned per month' : 'Planned for the year')
+    : (col === 'C' ? 'Monthly amount' : 'Amount');
   openSheet(`
-    <h2>${esc(label)}</h2><div class="sub">${col === 'C' ? 'Monthly amount' : 'Amount'} · currently ${fmt(val)}</div>
-    ${isFormula ? `<div class="warn">This cell is calculated by a formula in your sheet.
+    <h2>${esc(label)}</h2><div class="sub">${what} · currently ${fmt(val)}</div>
+    ${isFormula ? `<div class="warn">This cell is calculated by a formula in your sheet${
+      kind === 'plan' && col === 'B' ? ' — it currently just adds up the months' : ''}.
       Saving a number here replaces that formula permanently.</div>` : ''}
     <div class="amount-input"><span class="cur">₹</span>
       <input id="fx-amt" inputmode="decimal" value="${val ?? ''}"></div>
@@ -759,6 +772,7 @@ function bindView(name, arg) {
     if (cell) { const [row, mi] = cell.dataset.cell.split(':').map(Number); return editCellSheet(row, mi, false); }
     const act = e.target.closest('[data-act]');
     if (!act) return;
+    e.preventDefault();          // plan badges live inside the category link
     const a = act.dataset;
     switch (a.act) {
       case 'fy': return fyPickerSheet();
@@ -771,6 +785,8 @@ function bindView(name, arg) {
       case 'addlarge': return addLargeSheet(a.row ? +a.row : undefined);
       case 'editcell': return editCellSheet(+a.row, +a.month, a.large === '1');
       case 'fixed': return fixedEditSheet(+a.row, a.col, a.label, a.val === '' ? null : +a.val, a.fx === '1');
+      case 'plan':  return fixedEditSheet(+a.row, a.col || 'B', a.label, a.val === '' ? null : +a.val,
+                                          a.fx === '1', 'plan');
 
       /* category management */
       case 'addrow': {
