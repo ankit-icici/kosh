@@ -1,7 +1,7 @@
 /**
- * Kharcha — Apps Script backend
+ * Kosh — Apps Script backend
  * =============================
- * Turns your FY planning Google Sheets into a tiny JSON API for the Kharcha PWA.
+ * Turns your FY planning Google Sheets into a tiny JSON API for the Kosh PWA.
  *
  * The sheet stays the single source of truth. This script only reads cells,
  * adds amounts into month cells, appends notes, and keeps an audit log in a

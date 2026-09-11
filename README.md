@@ -1,17 +1,17 @@
-# Kharcha 💸
+# Kosh 💸
 
 A minimal, aesthetic PWA for tracking personal expenses — **backed entirely by your own
 Google Sheet**. No database, no server of ours, no vendor lock-in. The spreadsheet you
 already maintain stays the single source of truth; this app is just a faster, nicer way
 to update it from your phone.
 
-**Live app:** https://ankit-icici.github.io/kharcha/
+**Live app:** https://ankit-icici.github.io/kosh/
 
 ## How it works
 
 ```
 ┌─────────────────┐   HTTPS (JSON)   ┌──────────────────────┐        ┌──────────────────┐
-│  Kharcha PWA    │ ───────────────▶ │  Apps Script web app │ ─────▶ │  FY Google Sheet │
+│  Kosh PWA    │ ───────────────▶ │  Apps Script web app │ ─────▶ │  FY Google Sheet │
 │  (GitHub Pages) │ ◀─────────────── │  (your Google acct)  │ ◀───── │  (source of truth)│
 └─────────────────┘                  └──────────────────────┘        └──────────────────┘
 ```

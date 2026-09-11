@@ -1,6 +1,6 @@
 {
-  "name": "Kharcha",
-  "short_name": "Kharcha",
+  "name": "Kosh",
+  "short_name": "Kosh",
   "description": "Minimal personal expense tracker backed by your own Google Sheet.",
   "start_url": "./",
   "scope": "./",

@@ -8,12 +8,12 @@
    [`apps-script/Code.gs`](apps-script/Code.gs).
 3. At the top of the file, change `SHARED_TOKEN` to your own secret — any long
    random text (treat it like a password; don't commit it anywhere).
-4. Name the project "Kharcha" (top-left).
+4. Name the project "Kosh" (top-left).
 5. **Deploy → New deployment** → gear icon → **Web app**:
-   - Description: `kharcha v1`
+   - Description: `kosh v1`
    - **Execute as: Me**
    - **Who has access: Anyone**
-6. Click **Deploy** → Google asks you to authorize → *Advanced → Go to Kharcha
+6. Click **Deploy** → Google asks you to authorize → *Advanced → Go to Kosh
    (unsafe)* → Allow. (It's your own script; "unsafe" just means unreviewed by Google.)
 7. Copy the **Web app URL** (ends in `/exec`).
 
@@ -23,7 +23,7 @@
 
 ## 2 · Connect the app
 
-1. On your phone, open **https://ankit-icici.github.io/kharcha/**
+1. On your phone, open **https://ankit-icici.github.io/kosh/**
 2. Paste the Web app URL and your token → **Connect**.
 
 ## 3 · Install to home screen

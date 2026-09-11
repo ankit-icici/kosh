@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════════════
-   Kharcha — minimal personal expense tracker
+   Kosh — minimal personal expense tracker
    Backed by your own Google Sheet via an Apps Script web app.
    Plain JavaScript, no build step. See README.md for architecture.
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -210,7 +210,7 @@ function loadingCard() { return `<div class="spin"></div>`; }
 /* ─── view: setup / onboarding ─────────────────────────────────────────── */
 routes.setup = () => `
   <img src="icons/icon-192.png" class="onboard-logo" alt="">
-  <h1 class="center" style="font-size:26px;letter-spacing:-.02em">Kharcha</h1>
+  <h1 class="center" style="font-size:26px;letter-spacing:-.02em">Kosh</h1>
   <p class="center mut small" style="margin:6px 0 26px">Your expense sheet, on your phone.<br>Data lives only in your Google Sheet.</p>
   <div class="card">
     <div class="field"><label>Apps Script web app URL</label>
@@ -255,7 +255,7 @@ routes.home = () => {
 
   return `
   <div class="hdr">
-    <h1>Kharcha</h1>
+    <h1>Kosh</h1>
     ${fyPill()} ${themeBtn()}
     <a class="iconbtn" href="#/settings" title="Settings">⚙</a>
   </div>
@@ -454,7 +454,7 @@ routes.settings = () => `
     <div class="gap"></div>
     <button class="btn sm danger" data-act="reset">Sign out (clear this device)</button>
   </div>
-  <p class="center small mut">Kharcha v1 · data lives in your Google Sheet<br>code: github.com/${'ankit-icici'}/kharcha</p>`;
+  <p class="center small mut">Kosh v1 · data lives in your Google Sheet<br>code: github.com/${'ankit-icici'}/kosh</p>`;
 
 /* ─── bottom sheets ────────────────────────────────────────────────────── */
 function addExpenseSheet(pre = {}) {

@@ -1,7 +1,7 @@
-/* Kharcha service worker — caches the app shell so the app opens instantly.
+/* Kosh service worker — caches the app shell so the app opens instantly.
    Data always comes from the network (Apps Script); cached model lives in
    localStorage inside the app itself. Bump VERSION on every deploy. */
-const VERSION = 'kharcha-v1';
+const VERSION = 'kosh-v2';
 const SHELL = [
   './', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png'
