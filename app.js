@@ -60,22 +60,40 @@ function applyTheme() {
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
 
 /* ─── API client ───────────────────────────────────────────────────────── */
+/* Apps Script answers a POST with a 302 to googleusercontent, and the browser
+   re-issues that hop as a GET. Occasionally the GET lands back on doGet, so we
+   get the ping payload instead of our answer — even though the write itself
+   already ran. Reads are simply retried; writes must NOT be (they would apply
+   twice), so they raise a `lost` error and the caller re-reads the sheet. */
+const READ_ACTIONS = new Set(['ping', 'fys', 'get', 'log']);
+
 async function api(action, params = {}, { timeout = 30000 } = {}) {
   if (!S.cfg.url) throw new Error('Not set up yet');
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeout);
-  try {
-    const res = await fetch(S.cfg.url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },   // simple request → no CORS preflight
-      body: JSON.stringify({ token: S.cfg.token, action, ...params }),
-      signal: ctrl.signal,
-      redirect: 'follow',
-    });
-    const j = await res.json();
-    if (!j.ok) throw new Error(j.error || 'Request failed');
-    return j.data;
-  } finally { clearTimeout(t); }
+  const attempts = READ_ACTIONS.has(action) ? 3 : 1;
+
+  for (let i = 0; i < attempts; i++) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeout);
+    try {
+      const res = await fetch(S.cfg.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },  // simple request → no CORS preflight
+        body: JSON.stringify({ token: S.cfg.token, action, ...params }),
+        signal: ctrl.signal,
+        redirect: 'follow',
+      });
+      const j = await res.json();
+      if (!j.ok) throw new Error(j.error || 'Request failed');
+      if (action !== 'ping' && j.data && j.data.pong) {           // reply went missing
+        if (i < attempts - 1) { await new Promise((r) => setTimeout(r, 700)); continue; }
+        break;
+      }
+      return j.data;
+    } finally { clearTimeout(t); }
+  }
+  const err = new Error('Google dropped the reply — re-reading the sheet');
+  err.lost = true;
+  throw err;
 }
 
 /* offline outbox: failed writes are queued and retried */
@@ -90,8 +108,10 @@ async function flushOutbox() {
   for (const item of S.outbox) {
     try { await api(item.action, item.params); }
     catch (e) {
-      if (/token|formula|Bad/i.test(String(e.message))) { toast('Dropped: ' + item.label, true); }
-      else remaining.push(item);
+      // never re-queue a lost reply: the write may already have applied
+      if (e.lost || /token|formula|Bad|moved/i.test(String(e.message))) {
+        if (!e.lost) toast('Dropped: ' + item.label, true);
+      } else remaining.push(item);
     }
   }
   S.outbox = remaining; store.set('outbox', S.outbox); S.syncing = false;
@@ -740,7 +760,9 @@ async function submitWrite(action, params, label, optimistic, extra) {
     toast('Saved ✓');
     refresh(true);
   } catch (e) {
-    if (/token|formula|Bad|Unknown|required|section/i.test(String(e.message))) {
+    if (e.lost) {                       // it most likely landed; show what the sheet says
+      toast('Checking the sheet…'); refresh();
+    } else if (/token|formula|Bad|Unknown|required|section|moved/i.test(String(e.message))) {
       toast(e.message, true); refresh(true);
     } else {
       queueWrite(action, params, label);
@@ -761,6 +783,7 @@ async function structuralWrite(action, params, okMsg) {
     toast(okMsg);
     renderIfCurrent();
   } catch (e) {
+    if (e.lost) { toast('Checking the sheet…'); return refresh(); }
     toast(e.name === 'AbortError' ? 'Timed out — nothing was changed' : e.message, true);
   }
 }
