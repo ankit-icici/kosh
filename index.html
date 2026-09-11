@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Kharcha</title>
+<meta name="description" content="Minimal personal expense tracker backed by your own Google Sheet.">
+<meta name="theme-color" content="#F7F6F3" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0E0E11" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Kharcha">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <main id="view" aria-live="polite"></main>
+    <nav id="tabbar" hidden>
+      <a href="#/" data-tab="home"><span class="ti">⌂</span><span>Home</span></a>
+      <a href="#/months" data-tab="months"><span class="ti">▦</span><span>Months</span></a>
+      <a href="#/large" data-tab="large"><span class="ti">◈</span><span>Large</span></a>
+      <a href="#/year" data-tab="year"><span class="ti">◷</span><span>Year</span></a>
+    </nav>
+  </div>
+  <div id="sheet-backdrop" hidden></div>
+  <div id="sheet" role="dialog" aria-modal="true" hidden></div>
+  <div id="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
