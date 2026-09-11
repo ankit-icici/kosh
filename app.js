@@ -43,6 +43,7 @@ const S = {
   outbox: store.get('outbox', []),
   loading: false,
   syncing: false,
+  scriptVersion: null,
 };
 
 function saveCfg() { store.set('cfg', S.cfg); }
@@ -176,6 +177,8 @@ const M = {
   largeSpent: () => M.largeRows().reduce((a, r) => a + r.cells.reduce((b, c) => b + (c.v || 0), 0), 0),
   rowSpent: (r) => r.cells.reduce((a, c) => a + (c.v || 0), 0),
 };
+
+const BUILD = '2026-09-11.9';
 
 /* ─── UI primitives: toast + bottom sheet ──────────────────────────────── */
 let toastT;
@@ -538,6 +541,15 @@ routes.settings = () => `
     <div class="gap"></div>
     <button class="btn sm danger" data-act="reset">Sign out (clear this device)</button>
   </div>
+  <div class="card">
+    <h3>About</h3>
+    <div class="row"><div class="grow"><div class="t">App build</div></div>
+      <div class="amt num small">${BUILD}</div></div>
+    <div class="row"><div class="grow"><div class="t">Sheet script</div></div>
+      <div class="amt num small">${esc(S.scriptVersion || '—')}</div></div>
+    <div class="row"><div class="grow"><div class="t">Financial year tab</div></div>
+      <div class="amt num small">${esc(S.model?.fy?.tab || '—')}</div></div>
+  </div>
   <p class="center small mut">Kosh · data lives in your Google Sheet<br>github.com/ankit-icici/kosh</p>`;
 
 /* ─── bottom sheets: entry ─────────────────────────────────────────────── */
@@ -845,7 +857,7 @@ function bindView(name, arg) {
       case 'refys': return loadFYs().then(() => { renderIfCurrent(); toast('FY list updated'); });
       case 'testconn': {
         S.cfg.url = $('#st-url').value.trim(); S.cfg.token = $('#st-token').value.trim(); saveCfg();
-        return api('ping').then(() => { toast('Connected ✓'); refresh(true); })
+        return api('ping').then((d) => { S.scriptVersion = d.version; toast('Connected ✓ · script ' + d.version); refresh(true); })
                           .catch((err) => toast(err.message, true));
       }
       case 'reset': return confirmSheet({
@@ -874,11 +886,26 @@ function bindView(name, arg) {
 
 /* ─── boot ─────────────────────────────────────────────────────────────── */
 applyTheme();
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').then((reg) => {
+    // a new build installed behind us — reload once so the user never sits on stale code
+    reg.addEventListener('updatefound', () => {
+      const sw = reg.installing;
+      sw && sw.addEventListener('statechange', () => {
+        if (sw.state === 'installed' && navigator.serviceWorker.controller
+            && !sessionStorage.getItem('kh.reloaded')) {
+          try { sessionStorage.setItem('kh.reloaded', '1'); } catch {}
+          location.reload();
+        }
+      });
+    });
+  }).catch(() => {});
+}
 if (S.cfg.url && S.cfg.fyId) {
   S.model = cachedModel();
   refresh(!!S.model);
   if (!S.fys.length) loadFYs();
+  api('ping').then((d) => { S.scriptVersion = d.version; }).catch(() => {});
   flushOutbox();
 }
 route();
