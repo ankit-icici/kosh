@@ -178,6 +178,7 @@ table.matrix{border-collapse:separate;border-spacing:0;min-width:100%;white-spac
 #sheet .sub{font-size:13.5px;color:var(--mut);font-weight:600;margin-bottom:16px}
 
 /* tab bar */
+#tabbar[hidden]{display:none}
 #tabbar{position:fixed;bottom:0;left:0;right:0;z-index:30;max-width:520px;margin:0 auto;
   display:flex;background:color-mix(in srgb, var(--card) 88%, transparent);
   backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
