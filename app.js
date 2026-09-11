@@ -361,7 +361,6 @@ routes.large = (arg) => {
       <div class="v num ${M.largePlanned() - M.largeSpent() < 0 ? 'bad' : ''}">${fmt(M.largePlanned() - M.largeSpent())}</div>
       <div class="c">planned minus spent</div></div>
   </div>
-  <button class="btn" data-act="addlarge" style="margin-bottom:12px">＋&nbsp; Add large expense</button>
   <div class="card tight">
     ${rows.map((r) => {
       const spent = M.rowSpent(r);
@@ -380,6 +379,8 @@ routes.large = (arg) => {
       </a>`;
     }).join('') || '<div class="empty">No large-expense rows found in the sheet</div>'}
   </div>
+  <button class="btn" data-act="addlarge">＋&nbsp; Add large expense</button>
+  <div class="gap"></div>
   ${manageBtn('large')}`;
 };
 
@@ -400,7 +401,6 @@ function largeDetail(row) {
         ? (spent > r.total ? fmt(spent - r.total) + ' over' : fmt(r.total - spent) + ' left')
         : 'tap to set a plan'}</div></div>
   </div>
-  <button class="btn" data-act="addlarge" data-row="${r.row}" style="margin-bottom:14px">＋&nbsp; Add to ${esc(r.label)}</button>
   <div class="card tight">
     ${r.cells.map((c, i) => (c.v || c.note) ? `
       <div class="row" style="align-items:flex-start;flex-wrap:wrap">
@@ -409,7 +409,8 @@ function largeDetail(row) {
         <div class="amt num">${fmtS(c.v || 0)}</div>
         <button class="pill" data-act="editcell" data-row="${r.row}" data-month="${i}" data-large="1" style="padding:6px 11px;font-size:12px">edit</button>
       </div>` : '').join('') || '<div class="empty">Nothing yet this year</div>'}
-  </div>`;
+  </div>
+  <button class="btn" data-act="addlarge" data-row="${r.row}">＋&nbsp; Add to ${esc(r.label)}</button>`;
 }
 
 /* ─── view: year (funds + fixed, both editable) ────────────────────────── */
