@@ -34,7 +34,7 @@ var KNOWN_FYS = {
   'FY27': '16Vi-MFXjRknsbupGWVo5cueU_2i93LPST34Jhyo-NLo'
 };
 
-var VERSION = '1.2.0';
+var VERSION = '1.3.0';
 var MONTH_COL_START = 4;   // column D
 var MONTH_COUNT = 12;      // D..O = Apr..Mar
 var SCAN_ROWS = 80;        // how many rows to scan for sections
@@ -122,8 +122,10 @@ function listFYs() {
       if (m) add('FY' + m[1], f.id, sh.getName(), title + ' · ' + sh.getName());
     });
     // the file itself (its first tab), named from the file
+    // the file itself: pin its first tab BY NAME, so inserting another tab
+    // later can never silently repoint this year at different data
     var fm = title.match(/FY\s?(\d{2,4})/i) || String(f.name).match(/FY\s?(\d{2,4})/i);
-    if (fm) add('FY' + fm[1], f.id, null, title);
+    if (fm && sheets.length) add('FY' + fm[1], f.id, sheets[0].getName(), title);
   });
 
   var fys = Object.keys(map).map(function (k) { return map[k]; });
@@ -254,6 +256,26 @@ function getModel(fyId, tab) {
 }
 
 // ─── writes ─────────────────────────────────────────────────────────────────
+/**
+ * Rows move whenever you insert or delete lines directly in Google Sheets.
+ * Every write therefore carries the category name the app *thinks* it is
+ * writing to; if column A no longer matches, we find that name inside the
+ * section and use its real row instead of scribbling over the wrong one.
+ */
+function resolveRow(sheet, section, row, label) {
+  if (!label) return row;
+  label = String(label).trim();
+  if (String(sheet.getRange(row, 1).getValue() || '').trim() === label) return row;
+
+  var sec = sections(sheet)[section];
+  if (sec && sec.last >= sec.first) {
+    var col = sheet.getRange(sec.first, 1, sec.last - sec.first + 1, 1).getValues();
+    for (var i = 0; i < col.length; i++)
+      if (String(col[i][0] || '').trim() === label) return sec.first + i;
+  }
+  throw new Error('"' + label + '" has moved or been removed in the sheet — refresh the app and try again');
+}
+
 function writeMonthCell(req, section) {
   var row = Number(req.row), month = Number(req.month), amount = Number(req.amount);
   if (!row || isNaN(month) || month < 0 || month >= MONTH_COUNT) throw new Error('Bad row/month');
@@ -264,6 +286,7 @@ function writeMonthCell(req, section) {
   lock.waitLock(20000);
   try {
     var o = openFY(req.fyId, req.tab), sheet = o.sheet;
+    row = resolveRow(sheet, section, row, req.label);
     var cell = sheet.getRange(row, MONTH_COL_START + month);
     if (cell.getFormula()) throw new Error('That cell contains a formula — edit it in the sheet.');
     var prev = Number(cell.getValue()) || 0;
@@ -288,7 +311,8 @@ function writeMonthCell(req, section) {
 
 function setNote(req) {
   var o = openFY(req.fyId, req.tab);
-  var cell = o.sheet.getRange(Number(req.row), MONTH_COL_START + Number(req.month));
+  var row = resolveRow(o.sheet, 'large', Number(req.row), req.label);
+  var cell = o.sheet.getRange(row, MONTH_COL_START + Number(req.month));
   cell.setNote(req.note || '');
   SpreadsheetApp.flush();
   return { note: cell.getNote() || '' };
@@ -303,6 +327,7 @@ function setValue(req) {
   lock.waitLock(20000);
   try {
     var o = openFY(req.fyId, req.tab), sheet = o.sheet;
+    row = resolveRow(sheet, req.section, row, req.label);
     var cell = sheet.getRange(row, col);
     var prevFormula = cell.getFormula();      // replaced on purpose; the app warns first
     var prev = Number(cell.getValue()) || 0;
@@ -425,7 +450,8 @@ function renameRow(req) {
   var label = String(req.label || '').trim();
   if (!label) throw new Error('Name is required');
   var o = openFY(req.fyId, req.tab), sheet = o.sheet;
-  var cell = sheet.getRange(Number(req.row), 1);
+  req.label = req.was;                       // match on the OLD name, write the new one
+  var cell = sheet.getRange(resolveRow(sheet, req.section, Number(req.row), req.label), 1);
   var prev = String(cell.getValue() || '');
   cell.setValue(label);
   SpreadsheetApp.flush();
@@ -453,6 +479,7 @@ function deleteRowAction(req) {
       .filter(function (s) { return s; });
     if (labels.length <= 1) throw new Error('Can\u2019t remove the only category in a section');
 
+    row = resolveRow(sheet, req.section, row, req.was);
     var label = String(sheet.getRange(row, 1).getValue() || '');
     sheet.deleteRow(row);
     SpreadsheetApp.flush();

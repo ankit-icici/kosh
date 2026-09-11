@@ -304,7 +304,7 @@ routes.months = () => {
     `<th class="${i === mi ? 'cur' : ''}">${esc(mm)}</th>`).join('')}</tr>`;
   const body = rows.map((r) => `<tr>
       <td class="rowhead">${esc(r.label)}</td>
-      <td class="num plancell" data-act="plan" data-row="${r.row}" data-col="C"
+      <td class="num plancell" data-act="plan" data-section="variable" data-row="${r.row}" data-col="C"
           data-label="${esc(r.label)}" data-val="${r.monthly ?? ''}"
           data-fx="${r.monthlyLocked ? 1 : 0}">${fmtS(r.monthly)}</td>
       ${r.cells.map((v, i) => `<td class="num ${i === mi ? 'cur' : ''} ${!v ? 'zero' : ''}"
@@ -372,7 +372,7 @@ routes.large = (arg) => {
           <div class="s">${notes ? notes + ' note' + (notes > 1 ? 's' : '') : '&nbsp;'}</div></div>
         <div class="rightcol">
           <div class="amt num">${fmtS(spent)}</div>
-          <button class="plan num ${planned > 0 ? '' : 'none'}" data-act="plan" data-row="${r.row}"
+          <button class="plan num ${planned > 0 ? '' : 'none'}" data-act="plan" data-section="large" data-row="${r.row}"
             data-label="${esc(r.label)}" data-val="${planned ?? ''}" data-fx="${r.totalLocked ? 1 : 0}"
           >${planned > 0 ? 'plan ' + fmtS(planned) : 'set plan'}</button>
         </div><span class="chev">›</span>
@@ -393,7 +393,7 @@ function largeDetail(row) {
   <div class="hdr">${backBtn}<h1 style="font-size:19px">${esc(r.label)}</h1>${fyPill()}</div>
   <div class="stats">
     <div class="stat"><div class="l">Spent so far</div><div class="v num">${fmt(spent)}</div></div>
-    <div class="stat" data-act="plan" data-row="${r.row}" data-label="${esc(r.label)}"
+    <div class="stat" data-act="plan" data-section="large" data-row="${r.row}" data-label="${esc(r.label)}"
          data-val="${r.total ?? ''}" data-fx="${r.totalLocked ? 1 : 0}" style="cursor:pointer">
       <div class="l">Planned <span style="color:var(--acc-ink)">· edit</span></div>
       <div class="v num">${r.total > 0 ? fmt(r.total) : '—'}</div>
@@ -424,8 +424,8 @@ routes.year = () => {
     <div class="row"><div class="grow kicker" style="padding:4px 0">Funds / income</div>
       <div class="amt num mut">${fmt(m.funds?.total)}</div></div>
     ${(m.funds?.rows || []).map((r) => `
-      <div class="row" data-act="fixed" data-row="${r.row}" data-col="B" data-label="${esc(r.label)}"
-           data-val="${r.value ?? ''}" data-fx="${r.locked ? 1 : 0}">
+      <div class="row" data-act="fixed" data-section="funds" data-row="${r.row}" data-col="B"
+           data-label="${esc(r.label)}" data-val="${r.value ?? ''}" data-fx="${r.locked ? 1 : 0}">
         <div class="grow"><div class="t">${esc(r.label)}</div>
           ${r.locked ? '<div class="s">calculated in the sheet</div>' : ''}</div>
         <div class="amt num">${fmtS(r.value)}</div><span class="chev">›</span>
@@ -437,8 +437,8 @@ routes.year = () => {
   <div class="card tight">
     <div class="row"><div class="grow kicker" style="padding:4px 0">Fixed monthly expenses</div></div>
     ${(m.fixed || []).map((r) => `
-      <div class="row" data-act="fixed" data-row="${r.row}" data-col="C" data-label="${esc(r.label)}"
-           data-val="${r.monthly ?? ''}" data-fx="${r.monthlyLocked ? 1 : 0}">
+      <div class="row" data-act="fixed" data-section="fixed" data-row="${r.row}" data-col="C"
+           data-label="${esc(r.label)}" data-val="${r.monthly ?? ''}" data-fx="${r.monthlyLocked ? 1 : 0}">
         <div class="grow"><div class="t">${esc(r.label)}</div>
           <div class="s">${fmt(r.total)} / year</div></div>
         <div class="amt num">${fmtS(r.monthly)}<span class="small mut">/mo</span></div>
@@ -552,7 +552,7 @@ function addExpenseSheet(pre = {}) {
       if (!amount) return toast('Enter an amount', true);
       const note = $('#ax-note', sh).value.trim();
       const cat = cats.find((c) => c.row === sel);
-      submitWrite('addVariable', { fyId: S.cfg.fyId, tab: S.cfg.fyTab, row: sel, month, amount, mode: 'add', note },
+      submitWrite('addVariable', { fyId: S.cfg.fyId, tab: S.cfg.fyTab, row: sel, label: cat?.label, month, amount, mode: 'add', note },
         `${cat?.label} +${fmtS(amount)}`, () => {
           if (cat) cat.cells[month] = (cat.cells[month] || 0) + amount;
           if (S.model?.variable?.totalCells) S.model.variable.totalCells[month] += amount;
@@ -592,7 +592,7 @@ function addLargeSheet(preRow) {
       if (!amount) return toast('Enter an amount', true);
       const note = $('#al-note', sh).value.trim();
       const cat = cats.find((c) => c.row === sel);
-      submitWrite('addLarge', { fyId: S.cfg.fyId, tab: S.cfg.fyTab, row: sel, month, amount, mode: 'add', note },
+      submitWrite('addLarge', { fyId: S.cfg.fyId, tab: S.cfg.fyTab, row: sel, label: cat?.label, month, amount, mode: 'add', note },
         `${cat?.label} +${fmtS(amount)}`, () => {
           if (cat) {
             cat.cells[month].v = (cat.cells[month].v || 0) + amount;
@@ -635,9 +635,9 @@ function editCellSheet(row, month, isLarge) {
       const action = isLarge ? 'addLarge' : 'addVariable';
       const noteChanged = isLarge && noteNew !== (note || '');
       const doWrite = async () => {
-        if (noteChanged) await api('setNote', { fyId: S.cfg.fyId, tab: S.cfg.fyTab, row, month, note: noteNew }).catch(() => {});
+        if (noteChanged) await api('setNote', { fyId: S.cfg.fyId, tab: S.cfg.fyTab, row, label: r.label, month, note: noteNew }).catch(() => {});
       };
-      submitWrite(action, { fyId: S.cfg.fyId, tab: S.cfg.fyTab, row, month, amount, mode, note: '' },
+      submitWrite(action, { fyId: S.cfg.fyId, tab: S.cfg.fyTab, row, label: r.label, month, amount, mode, note: '' },
         `${r.label} ${mode === 'set' ? '=' : '+'}${fmtS(amount)}`, () => {
           const next = mode === 'set' ? amount : cur + amount;
           if (isLarge) { r.cells[month].v = next; if (noteChanged) r.cells[month].note = noteNew; }
@@ -647,7 +647,7 @@ function editCellSheet(row, month, isLarge) {
   });
 }
 
-function fixedEditSheet(row, col, label, val, isFormula, kind) {
+function fixedEditSheet(row, col, label, val, isFormula, kind, section) {
   const what = kind === 'plan'
     ? (col === 'C' ? 'Planned per month' : 'Planned for the year')
     : (col === 'C' ? 'Monthly amount' : 'Amount');
@@ -665,7 +665,8 @@ function fixedEditSheet(row, col, label, val, isFormula, kind) {
     $('#fx-go', sh).onclick = () => {
       const value = parseFloat($('#fx-amt', sh).value);
       if (isNaN(value)) return toast('Enter a number', true);
-      submitWrite('setValue', { fyId: S.cfg.fyId, tab: S.cfg.fyTab, row, col, value }, `${label} = ${fmtS(value)}`);
+      submitWrite('setValue', { fyId: S.cfg.fyId, tab: S.cfg.fyTab, row, col, value, section, label },
+        `${label} = ${fmtS(value)}`);
     };
   });
 }
@@ -785,9 +786,10 @@ function bindView(name, arg) {
       case 'add': return addExpenseSheet();
       case 'addlarge': return addLargeSheet(a.row ? +a.row : undefined);
       case 'editcell': return editCellSheet(+a.row, +a.month, a.large === '1');
-      case 'fixed': return fixedEditSheet(+a.row, a.col, a.label, a.val === '' ? null : +a.val, a.fx === '1');
+      case 'fixed': return fixedEditSheet(+a.row, a.col, a.label, a.val === '' ? null : +a.val,
+                                          a.fx === '1', null, a.section);
       case 'plan':  return fixedEditSheet(+a.row, a.col || 'B', a.label, a.val === '' ? null : +a.val,
-                                          a.fx === '1', 'plan');
+                                          a.fx === '1', 'plan', a.section);
 
       /* category management */
       case 'addrow': {
@@ -802,7 +804,7 @@ function bindView(name, arg) {
         const cfg = SECTIONS[a.section];
         return nameSheet({
           title: 'Rename', sub: `Currently “${a.label}”`, value: a.label, cta: 'Save name',
-          onSave: (label) => structuralWrite('renameRow', { section: a.section, row: +a.row, label }, `Renamed to “${label}”`),
+          onSave: (label) => structuralWrite('renameRow', { section: a.section, row: +a.row, was: a.label, label }, `Renamed to “${label}”`),
         });
       }
       case 'delrow': {
@@ -811,7 +813,7 @@ function bindView(name, arg) {
           title: `Remove “${a.label}”?`,
           body: `This deletes the whole row from your sheet, including every month’s amount${a.section === 'large' ? ' and note' : ''}. Totals will re-calculate.`,
           danger: `Remove ${cfg.noun}`,
-          onYes: () => structuralWrite('deleteRow', { section: a.section, row: +a.row }, `Removed “${a.label}”`),
+          onYes: () => structuralWrite('deleteRow', { section: a.section, row: +a.row, was: a.label }, `Removed “${a.label}”`),
         });
       }
 
