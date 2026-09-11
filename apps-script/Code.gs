@@ -34,7 +34,7 @@ var KNOWN_FYS = {
   'FY27': '16Vi-MFXjRknsbupGWVo5cueU_2i93LPST34Jhyo-NLo'
 };
 
-var VERSION = '1.1.0';
+var VERSION = '1.2.0';
 var MONTH_COL_START = 4;   // column D
 var MONTH_COUNT = 12;      // D..O = Apr..Mar
 var SCAN_ROWS = 80;        // how many rows to scan for sections
@@ -58,7 +58,7 @@ function doPost(e) {
     switch (req.action) {
       case 'ping':        out = { pong: true, version: VERSION }; break;
       case 'fys':         out = listFYs(); break;
-      case 'get':         out = getModel(req.fyId); break;
+      case 'get':         out = getModel(req.fyId, req.tab); break;
       case 'addVariable': out = writeMonthCell(req, 'variable'); break;
       case 'addLarge':    out = writeMonthCell(req, 'large'); break;
       case 'setNote':     out = setNote(req); break;
@@ -81,37 +81,72 @@ function respond(obj) {
 }
 
 // ─── FY discovery ───────────────────────────────────────────────────────────
+/**
+ * Discover financial years. A year can be either
+ *   • its own spreadsheet   — a Drive file whose name contains "FY27", "FY28"… , or
+ *   • a tab inside one      — a sheet named "FY27", "FY28"… in any of those files.
+ * Both are listed together, so you can start with one file per year and later
+ * switch to tabs (or mix) without touching this script.
+ */
 function listFYs() {
   var map = {};
+  function add(label, id, tab, name) {
+    if (!map[label]) map[label] = { label: label, id: id, tab: tab || null, name: name };
+  }
+
+  var files = [];
   Object.keys(KNOWN_FYS).forEach(function (label) {
-    map[label] = { label: label, id: KNOWN_FYS[label], name: label };
+    files.push({ id: KNOWN_FYS[label], name: label });
   });
   try {
     var it = DriveApp.searchFiles(
       "title contains 'Planning' and mimeType = 'application/vnd.google-apps.spreadsheet'");
     while (it.hasNext()) {
       var f = it.next();
-      var m = f.getName().match(/FY\s?(\d{2,4})/i);
-      if (m) {
-        var label = 'FY' + m[1];
-        map[label] = { label: label, id: f.getId(), name: f.getName() };
-      }
+      if (/FY\s?\d{2,4}/i.test(f.getName())) files.push({ id: f.getId(), name: f.getName() });
     }
   } catch (e) { /* Drive scope missing — fall back to KNOWN_FYS */ }
+
+  var seen = {};
+  files.forEach(function (f) {
+    if (seen[f.id]) return;
+    seen[f.id] = true;
+    var ss, sheets;
+    try { ss = SpreadsheetApp.openById(f.id); sheets = ss.getSheets(); }
+    catch (e) { return; }
+    var title = ss.getName();
+
+    // tabs named after a financial year
+    sheets.forEach(function (sh) {
+      var m = sh.getName().match(/FY\s?(\d{2,4})/i);
+      if (m) add('FY' + m[1], f.id, sh.getName(), title + ' · ' + sh.getName());
+    });
+    // the file itself (its first tab), named from the file
+    var fm = title.match(/FY\s?(\d{2,4})/i) || String(f.name).match(/FY\s?(\d{2,4})/i);
+    if (fm) add('FY' + fm[1], f.id, null, title);
+  });
+
   var fys = Object.keys(map).map(function (k) { return map[k]; });
   fys.sort(function (a, b) { return b.label.localeCompare(a.label); });
   return { fys: fys };
 }
 
-function openFY(fyId) {
+/**
+ * Open an FY. `fyId` is the spreadsheet's file id; `tab` optionally names a
+ * sheet inside it, so a financial year can live either in its own file or as
+ * a tab in one workbook — both work.
+ */
+function openFY(fyId, tab) {
   if (!fyId) throw new Error('fyId missing');
   var ss = SpreadsheetApp.openById(fyId);
-  return { ss: ss, sheet: ss.getSheets()[0] };
+  var sheet = tab ? ss.getSheetByName(tab) : null;
+  if (tab && !sheet) throw new Error('No tab named "' + tab + '" in that spreadsheet');
+  return { ss: ss, sheet: sheet || ss.getSheets()[0] };
 }
 
 // ─── model ──────────────────────────────────────────────────────────────────
-function getModel(fyId) {
-  var o = openFY(fyId), sheet = o.sheet;
+function getModel(fyId, tab) {
+  var o = openFY(fyId, tab), sheet = o.sheet;
   var rng = sheet.getRange(1, 1, SCAN_ROWS, MONTH_COL_START - 1 + MONTH_COUNT);
   var vals = rng.getValues();
   var formulas = rng.getFormulas();
@@ -207,7 +242,7 @@ function getModel(fyId) {
     });
 
   return {
-    fy: { id: fyId, name: o.ss.getName() },
+    fy: { id: fyId, tab: sheet.getName(), name: o.ss.getName() },
     months: months,
     funds: { rows: funds, total: fundsTotal },
     fixed: fixed,
@@ -228,7 +263,7 @@ function writeMonthCell(req, section) {
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    var o = openFY(req.fyId), sheet = o.sheet;
+    var o = openFY(req.fyId, req.tab), sheet = o.sheet;
     var cell = sheet.getRange(row, MONTH_COL_START + month);
     if (cell.getFormula()) throw new Error('That cell contains a formula — edit it in the sheet.');
     var prev = Number(cell.getValue()) || 0;
@@ -252,7 +287,7 @@ function writeMonthCell(req, section) {
 }
 
 function setNote(req) {
-  var o = openFY(req.fyId);
+  var o = openFY(req.fyId, req.tab);
   var cell = o.sheet.getRange(Number(req.row), MONTH_COL_START + Number(req.month));
   cell.setNote(req.note || '');
   SpreadsheetApp.flush();
@@ -267,14 +302,15 @@ function setValue(req) {
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    var o = openFY(req.fyId), sheet = o.sheet;
+    var o = openFY(req.fyId, req.tab), sheet = o.sheet;
     var cell = sheet.getRange(row, col);
-    if (cell.getFormula()) throw new Error('That cell contains a formula — edit it in the sheet.');
+    var prevFormula = cell.getFormula();      // replaced on purpose; the app warns first
     var prev = Number(cell.getValue()) || 0;
     cell.setValue(value);
     var catLabel = String(sheet.getRange(row, 1).getValue() || '');
     appendLog(o.ss, [new Date(), 'fixed', catLabel, (req.col === 'C' ? 'monthly' : 'total'),
-                     value, 'set', req.note || '', prev, value]);
+                     value, 'set', prevFormula ? 'replaced formula ' + prevFormula : (req.note || ''),
+                     prev, value]);
     SpreadsheetApp.flush();
     return { row: row, col: req.col, prev: prev, value: value, category: catLabel };
   } finally { lock.releaseLock(); }
@@ -296,7 +332,7 @@ function appendLog(ss, rowVals) {
 }
 
 function readLog(req) {
-  var o = openFY(req.fyId);
+  var o = openFY(req.fyId, req.tab);
   var sh = o.ss.getSheetByName(LOG_SHEET);
   if (!sh) return { entries: [] };
   var last = sh.getLastRow();
@@ -361,7 +397,7 @@ function addRow(req) {
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    var o = openFY(req.fyId), sheet = o.sheet;
+    var o = openFY(req.fyId, req.tab), sheet = o.sheet;
     var sec = sections(sheet)[req.section];
     if (!sec) throw new Error('Unknown section: ' + req.section);
     if (sec.last < sec.first) throw new Error('That section is empty — add the first row in the sheet');
@@ -381,20 +417,20 @@ function addRow(req) {
 
     SpreadsheetApp.flush();
     appendLog(o.ss, [new Date(), req.section, label, '—', '', 'add-category', '', '', '']);
-    return getModel(req.fyId);
+    return getModel(req.fyId, req.tab);
   } finally { lock.releaseLock(); }
 }
 
 function renameRow(req) {
   var label = String(req.label || '').trim();
   if (!label) throw new Error('Name is required');
-  var o = openFY(req.fyId), sheet = o.sheet;
+  var o = openFY(req.fyId, req.tab), sheet = o.sheet;
   var cell = sheet.getRange(Number(req.row), 1);
   var prev = String(cell.getValue() || '');
   cell.setValue(label);
   SpreadsheetApp.flush();
   appendLog(o.ss, [new Date(), req.section || '', prev + ' → ' + label, '—', '', 'rename', '', '', '']);
-  return getModel(req.fyId);
+  return getModel(req.fyId, req.tab);
 }
 
 /**
@@ -406,7 +442,7 @@ function deleteRowAction(req) {
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    var o = openFY(req.fyId), sheet = o.sheet;
+    var o = openFY(req.fyId, req.tab), sheet = o.sheet;
     var sec = sections(sheet)[req.section];
     if (!sec) throw new Error('Unknown section: ' + req.section);
     var row = Number(req.row);
@@ -421,7 +457,7 @@ function deleteRowAction(req) {
     sheet.deleteRow(row);
     SpreadsheetApp.flush();
     appendLog(o.ss, [new Date(), req.section, label, '—', '', 'delete-category', '', '', '']);
-    return getModel(req.fyId);
+    return getModel(req.fyId, req.tab);
   } finally { lock.releaseLock(); }
 }
 

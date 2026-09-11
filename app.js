@@ -36,7 +36,7 @@ const store = {
 };
 
 const S = {
-  cfg: store.get('cfg', { url: '', token: '', fyId: '', fyLabel: '', theme: 'auto' }),
+  cfg: store.get('cfg', { url: '', token: '', fyId: '', fyTab: null, fyLabel: '', theme: 'auto' }),
   model: null,          // current FY model from the sheet
   fys: store.get('fys', []),
   logs: store.get('logs', []),
@@ -101,18 +101,19 @@ async function flushOutbox() {
 addEventListener('online', flushOutbox);
 
 /* ─── data loading ─────────────────────────────────────────────────────── */
-function cachedModel(fyId) { return store.get('model.' + fyId); }
+const fyKey = () => S.cfg.fyId + (S.cfg.fyTab ? '#' + S.cfg.fyTab : '');
+function cachedModel() { return store.get('model.' + fyKey()); }
 
 async function refresh(silent = false) {
   if (!S.cfg.url || !S.cfg.fyId) return;
   if (!silent) { S.loading = true; renderIfCurrent(); }
   try {
     const [model, log] = await Promise.all([
-      api('get', { fyId: S.cfg.fyId }),
-      api('log', { fyId: S.cfg.fyId, limit: 12 }).catch(() => ({ entries: S.logs })),
+      api('get', { fyId: S.cfg.fyId, tab: S.cfg.fyTab, tab: S.cfg.fyTab }),
+      api('log', { fyId: S.cfg.fyId, tab: S.cfg.fyTab, tab: S.cfg.fyTab, limit: 12 }).catch(() => ({ entries: S.logs })),
     ]);
     S.model = model; S.logs = log.entries || [];
-    store.set('model.' + S.cfg.fyId, model);
+    store.set('model.' + fyKey(), model);
     store.set('logs', S.logs);
   } catch (e) {
     if (!silent) toast(e.name === 'AbortError' ? 'Timed out — check connection' : e.message, true);
@@ -128,7 +129,7 @@ async function loadFYs() {
     if (!S.cfg.fyId && S.fys.length) {
       const now = fyLabelNow();
       const pick = S.fys.find((f) => f.label === now) || S.fys[0];
-      S.cfg.fyId = pick.id; S.cfg.fyLabel = pick.label; saveCfg();
+      S.cfg.fyId = pick.id; S.cfg.fyTab = pick.tab || null; S.cfg.fyLabel = pick.label; saveCfg();
     }
   } catch (e) { /* non-fatal */ }
 }
@@ -145,6 +146,15 @@ const M = {
   },
   budget: () => S.model?.variable?.totalBudget ?? M.varRows().reduce((a, r) => a + (r.monthly || 0), 0),
   summaryVal: (label) => S.model?.summary?.find((s) => s.label.toLowerCase() === label.toLowerCase())?.value,
+
+  /* Column B of a category row is what you PLANNED for the year;
+     columns D..O are what actually went out. Keep the two apart. */
+  varPlanned: () => M.varRows().reduce((a, r) => a + (r.total || 0), 0),
+  varSpent: () => (S.model?.variable?.totalCells || []).reduce((a, v) => a + (v || 0), 0),
+  varSaved: () => (S.model?.variable?.savingsCells || []).reduce((a, v) => a + (v || 0), 0),
+  largePlanned: () => S.model?.large?.totalYear ?? M.largeRows().reduce((a, r) => a + (r.total || 0), 0),
+  largeSpent: () => M.largeRows().reduce((a, r) => a + r.cells.reduce((b, c) => b + (c.v || 0), 0), 0),
+  rowSpent: (r) => r.cells.reduce((a, c) => a + (c.v || 0), 0),
 };
 
 /* ─── UI primitives: toast + bottom sheet ──────────────────────────────── */
@@ -203,6 +213,7 @@ function themeBtn() {
   return `<button class="iconbtn" data-act="theme" title="Theme">${ic}</button>`;
 }
 function loadingCard() { return `<div class="spin"></div>`; }
+const spentMonths = () => (S.model?.variable?.totalCells || []).filter((v) => v != null).length;
 function manageBtn(section, label = 'Manage categories') {
   return `<a class="btn ghost sm" href="#/manage/${section}">⚙&nbsp; ${label}</a>`;
 }
@@ -242,13 +253,10 @@ function bindSetup() {
   };
 }
 
-/* ─── view: home — whole-year position ─────────────────────────────────── */
+/* ─── view: home — the four year-end figures, nothing else ─────────────── */
 routes.home = () => {
   const m = S.model;
   const sv = (l) => M.summaryVal(l);
-  const income = sv('Total income'), expenses = sv('Total expenses');
-  const remaining = sv('Remaining'), savings = sv('Savings from monthly expenses');
-  const pct = income ? Math.min(100, (expenses / income) * 100) : 0;
 
   return `
   <div class="hdr">
@@ -264,42 +272,28 @@ routes.home = () => {
       <button class="pill" data-act="sync">Retry</button></div></div>` : ''}
 
   ${!m ? loadingCard() : `
-  <div class="card hero">
-    <div style="display:flex;justify-content:space-between;align-items:baseline">
-      <span class="month">Remaining · ${esc(S.cfg.fyLabel)}</span>
-      <span class="small mut">${S.loading ? 'refreshing…' : 'full year'}</span>
-    </div>
-    <div class="big num ${remaining < 0 ? 'bad' : ''}">${fmt(remaining)}</div>
-    <div class="bar"><i class="${pct >= 100 ? 'over' : ''}" style="width:${pct}%"></i></div>
-    <div class="foot">
-      <span>${fmt(expenses)} spent of ${fmt(income)}</span>
-      <span>${Math.round(pct)}%</span>
-    </div>
-  </div>
-
   <div class="stats">
-    <div class="stat"><div class="l">Total income</div><div class="v num">${fmt(income)}</div></div>
-    <div class="stat"><div class="l">Total expenses</div><div class="v num">${fmt(expenses)}</div></div>
-    <div class="stat wide"><div class="l">Savings from monthly expenses</div>
-      <div class="v num ${savings >= 0 ? 'good' : 'bad'}">${fmt(savings)}</div></div>
+    <div class="stat"><div class="l">Total income</div>
+      <div class="v num">${fmt(sv('Total income'))}</div>
+      <div class="c">funds + savings</div></div>
+    <div class="stat"><div class="l">Total expenses</div>
+      <div class="v num">${fmt(sv('Total expenses'))}</div>
+      <div class="c">planned for the year</div></div>
+    <div class="stat"><div class="l">Savings from monthly expenses</div>
+      <div class="v num ${M.varSaved() >= 0 ? 'good' : 'bad'}">${fmt(sv('Savings from monthly expenses'))}</div>
+      <div class="c">under budget so far</div></div>
+    <div class="stat"><div class="l">Remaining</div>
+      <div class="v num ${sv('Remaining') < 0 ? 'bad' : ''}">${fmt(sv('Remaining'))}</div>
+      <div class="c">after the full-year plan</div></div>
   </div>
-
-  <div class="card tight">
-    <div class="row" style="border-bottom:1px solid var(--line)"><div class="grow kicker" style="padding:4px 0">Recent</div></div>
-    ${S.logs.length ? S.logs.slice(0, 8).map((l) => `
-      <div class="row">
-        <div class="dot">${esc(String(l.category || '?')[0])}</div>
-        <div class="grow"><div class="t">${esc(l.category)}</div>
-          <div class="s">${esc(l.month)}${l.note ? ' · ' + esc(l.note) : ''} · ${timeAgo(l.when)}</div></div>
-        <div class="amt num">${l.amount === '' || l.amount == null ? '' : (l.mode === 'set' ? '=' : '+') + fmtS(l.amount)}</div>
-      </div>`).join('') : `<div class="empty">Entries you add will show up here</div>`}
-  </div>`}`;
+  <p class="center small mut" style="margin-top:16px">
+    ${esc(S.cfg.fyLabel)} · ${S.loading ? 'refreshing…' : 'straight from your sheet'}</p>`}`;
 };
 
 /* ─── view: months (full matrix) ───────────────────────────────────────── */
 routes.months = () => {
   const m = S.model, mi = fyMonthIdx(), months = M.months();
-  if (!m) return `<div class="hdr"><h1>Months</h1>${fyPill()}</div>` + loadingCard();
+  if (!m) return `<div class="hdr"><h1>Monthly</h1>${fyPill()}</div>` + loadingCard();
   const rows = M.varRows();
   const strip = months.map((mm, i) => `
     <div class="mcard ${i === mi ? 'cur' : ''}">
@@ -320,8 +314,24 @@ routes.months = () => {
   const savings = m.variable?.savingsCells ? `<tr><td class="rowhead mut">Saved</td><td></td>
     ${m.variable.savingsCells.map((v, i) => `<td class="num ${v > 0 ? 'good' : v < 0 ? 'bad' : 'zero'}">${v == null ? '' : fmtS(v)}</td>`).join('')}</tr>` : '';
 
+  const planned = M.varPlanned(), spent = M.varSpent(), saved = M.varSaved();
+
   return `
-  <div class="hdr"><h1>Months</h1><span class="sub">tap a cell to edit</span>${fyPill()}</div>
+  <div class="hdr"><h1>Monthly</h1><span class="sub">tap a cell to edit</span>${fyPill()}</div>
+  <div class="stats">
+    <div class="stat"><div class="l">Planned for the year</div>
+      <div class="v num">${fmt(planned)}</div><div class="c">sum of monthly budgets</div></div>
+    <div class="stat"><div class="l">Spent so far</div>
+      <div class="v num">${fmt(spent)}</div><div class="c">${spentMonths()} months entered</div></div>
+    <div class="stat"><div class="l">Saved so far</div>
+      <div class="v num ${saved >= 0 ? 'good' : 'bad'}">${fmt(saved)}</div>
+      <div class="c">budget minus actual</div></div>
+    <div class="stat"><div class="l">Left for the year</div>
+      <div class="v num ${planned - spent < 0 ? 'bad' : ''}">${fmt(planned - spent)}</div>
+      <div class="c">planned minus spent</div></div>
+  </div>
+  <p class="small mut" style="margin:-4px 0 14px">These four cover variable expenses only — fixed
+    monthly costs live on the Fixed tab.</p>
   <div class="mstrip">${strip}</div>
   <div class="matrix-wrap"><table class="matrix">
     <thead>${head}</thead><tbody>${body}${totals}${savings}</tbody>
@@ -340,21 +350,31 @@ routes.large = (arg) => {
   const rows = M.largeRows();
   return `
   <div class="hdr"><h1>Large & Investments</h1>${fyPill()}</div>
+  <div class="stats">
+    <div class="stat"><div class="l">Spent so far</div>
+      <div class="v num">${fmt(M.largeSpent())}</div><div class="c">actual, all categories</div></div>
+    <div class="stat"><div class="l">Planned for the year</div>
+      <div class="v num">${fmt(M.largePlanned())}</div><div class="c">column B in the sheet</div></div>
+  </div>
   <button class="btn" data-act="addlarge" style="margin-bottom:12px">＋&nbsp; Add large expense</button>
   <div class="card tight">
     ${rows.map((r) => {
-      const spent = r.cells.reduce((a, c) => a + (c.v || 0), 0);
+      const spent = M.rowSpent(r);
       const notes = r.cells.filter((c) => c.note).length;
+      const planned = r.total;
       return `<a class="row" href="#/large/${r.row}">
         <div class="dot">${esc(r.label[0])}</div>
         <div class="grow"><div class="t">${esc(r.label)}</div>
-          <div class="s">${notes ? notes + ' note' + (notes > 1 ? 's' : '') + ' · ' : ''}planned ${fmt(r.total)}</div></div>
-        <div class="amt num">${fmtS(spent)}</div><span class="chev">›</span>
+          <div class="s">${notes ? notes + ' note' + (notes > 1 ? 's' : '') : '&nbsp;'}</div></div>
+        <div class="rightcol">
+          <div class="amt num">${fmtS(spent)}</div>
+          ${planned > 0
+            ? `<div class="plan num">plan ${fmtS(planned)}</div>`
+            : `<div class="plan none">no plan</div>`}
+        </div><span class="chev">›</span>
       </a>`;
     }).join('') || '<div class="empty">No large-expense rows found in the sheet</div>'}
   </div>
-  <div class="row" style="padding:2px 4px 14px"><div class="grow kicker">FY total</div>
-    <div class="amt num">${fmt(m.large?.totalYear)}</div></div>
   ${manageBtn('large')}`;
 };
 
@@ -366,8 +386,10 @@ function largeDetail(row) {
   return `
   <div class="hdr">${backBtn}<h1 style="font-size:19px">${esc(r.label)}</h1>${fyPill()}</div>
   <div class="stats">
-    <div class="stat"><div class="l">Spent</div><div class="v num">${fmt(spent)}</div></div>
-    <div class="stat"><div class="l">Planned</div><div class="v num">${fmt(r.total)}</div></div>
+    <div class="stat"><div class="l">Spent so far</div><div class="v num">${fmt(spent)}</div></div>
+    <div class="stat"><div class="l">Planned</div>
+      <div class="v num">${r.total > 0 ? fmt(r.total) : '—'}</div>
+      ${r.total > 0 ? `<div class="c">${spent > r.total ? fmt(spent - r.total) + ' over' : fmt(r.total - spent) + ' left'}</div>` : ''}</div>
   </div>
   <button class="btn" data-act="addlarge" data-row="${r.row}" style="margin-bottom:14px">＋&nbsp; Add to ${esc(r.label)}</button>
   <div class="card tight">
@@ -384,18 +406,19 @@ function largeDetail(row) {
 /* ─── view: year (funds + fixed, both editable) ────────────────────────── */
 routes.year = () => {
   const m = S.model;
-  if (!m) return `<div class="hdr"><h1>Year</h1>${fyPill()}</div>` + loadingCard();
+  if (!m) return `<div class="hdr"><h1>Fixed</h1>${fyPill()}</div>` + loadingCard();
   return `
-  <div class="hdr"><h1>${esc(S.cfg.fyLabel)} overview</h1>${fyPill()}</div>
+  <div class="hdr"><h1>Fixed</h1><span class="sub">income & monthly costs</span>${fyPill()}</div>
 
   <div class="card tight">
     <div class="row"><div class="grow kicker" style="padding:4px 0">Funds / income</div>
       <div class="amt num mut">${fmt(m.funds?.total)}</div></div>
     ${(m.funds?.rows || []).map((r) => `
-      <div class="row" ${r.locked ? '' : `data-act="fixed" data-row="${r.row}" data-col="B" data-label="${esc(r.label)}" data-val="${r.value ?? ''}"`}>
-        <div class="grow"><div class="t">${esc(r.label)}</div></div>
-        <div class="amt num">${fmtS(r.value)}</div>
-        ${r.locked ? '<span class="chev small">fx</span>' : '<span class="chev">›</span>'}
+      <div class="row" data-act="fixed" data-row="${r.row}" data-col="B" data-label="${esc(r.label)}"
+           data-val="${r.value ?? ''}" data-fx="${r.locked ? 1 : 0}">
+        <div class="grow"><div class="t">${esc(r.label)}</div>
+          ${r.locked ? '<div class="s">calculated in the sheet</div>' : ''}</div>
+        <div class="amt num">${fmtS(r.value)}</div><span class="chev">›</span>
       </div>`).join('')}
   </div>
   ${manageBtn('funds', 'Manage income rows')}
@@ -404,11 +427,12 @@ routes.year = () => {
   <div class="card tight">
     <div class="row"><div class="grow kicker" style="padding:4px 0">Fixed monthly expenses</div></div>
     ${(m.fixed || []).map((r) => `
-      <div class="row" ${r.monthlyLocked ? '' : `data-act="fixed" data-row="${r.row}" data-col="C" data-label="${esc(r.label)}" data-val="${r.monthly ?? ''}"`}>
+      <div class="row" data-act="fixed" data-row="${r.row}" data-col="C" data-label="${esc(r.label)}"
+           data-val="${r.monthly ?? ''}" data-fx="${r.monthlyLocked ? 1 : 0}">
         <div class="grow"><div class="t">${esc(r.label)}</div>
           <div class="s">${fmt(r.total)} / year</div></div>
         <div class="amt num">${fmtS(r.monthly)}<span class="small mut">/mo</span></div>
-        ${r.monthlyLocked ? '<span class="chev small">fx</span>' : '<span class="chev">›</span>'}
+        <span class="chev">›</span>
       </div>`).join('')}
   </div>
   ${manageBtn('fixed', 'Manage fixed expenses')}
@@ -474,7 +498,7 @@ routes.settings = () => `
   </div>
   <div class="card">
     <h3>Financial year</h3>
-    <div class="chips">${S.fys.map((f) => `<button class="chip ${f.id === S.cfg.fyId ? 'on' : ''}" data-fyid="${esc(f.id)}" data-fylabel="${esc(f.label)}">${esc(f.label)}</button>`).join('') || '<span class="small mut">Connect first</span>'}</div>
+    <div class="chips">${S.fys.map((f) => `<button class="chip ${f.id === S.cfg.fyId && (f.tab || null) === S.cfg.fyTab ? 'on' : ''}" data-fyid="${esc(f.id)}" data-fylabel="${esc(f.label)}" data-fytab="${esc(f.tab || '')}">${esc(f.label)}</button>`).join('') || '<span class="small mut">Connect first</span>'}</div>
     <div class="gap"></div>
     <button class="btn sm ghost" data-act="refys">Re-scan Drive for FY sheets</button>
   </div>
@@ -518,7 +542,7 @@ function addExpenseSheet(pre = {}) {
       if (!amount) return toast('Enter an amount', true);
       const note = $('#ax-note', sh).value.trim();
       const cat = cats.find((c) => c.row === sel);
-      submitWrite('addVariable', { fyId: S.cfg.fyId, row: sel, month, amount, mode: 'add', note },
+      submitWrite('addVariable', { fyId: S.cfg.fyId, tab: S.cfg.fyTab, row: sel, month, amount, mode: 'add', note },
         `${cat?.label} +${fmtS(amount)}`, () => {
           if (cat) cat.cells[month] = (cat.cells[month] || 0) + amount;
           if (S.model?.variable?.totalCells) S.model.variable.totalCells[month] += amount;
@@ -558,7 +582,7 @@ function addLargeSheet(preRow) {
       if (!amount) return toast('Enter an amount', true);
       const note = $('#al-note', sh).value.trim();
       const cat = cats.find((c) => c.row === sel);
-      submitWrite('addLarge', { fyId: S.cfg.fyId, row: sel, month, amount, mode: 'add', note },
+      submitWrite('addLarge', { fyId: S.cfg.fyId, tab: S.cfg.fyTab, row: sel, month, amount, mode: 'add', note },
         `${cat?.label} +${fmtS(amount)}`, () => {
           if (cat) {
             cat.cells[month].v = (cat.cells[month].v || 0) + amount;
@@ -601,9 +625,9 @@ function editCellSheet(row, month, isLarge) {
       const action = isLarge ? 'addLarge' : 'addVariable';
       const noteChanged = isLarge && noteNew !== (note || '');
       const doWrite = async () => {
-        if (noteChanged) await api('setNote', { fyId: S.cfg.fyId, row, month, note: noteNew }).catch(() => {});
+        if (noteChanged) await api('setNote', { fyId: S.cfg.fyId, tab: S.cfg.fyTab, row, month, note: noteNew }).catch(() => {});
       };
-      submitWrite(action, { fyId: S.cfg.fyId, row, month, amount, mode, note: '' },
+      submitWrite(action, { fyId: S.cfg.fyId, tab: S.cfg.fyTab, row, month, amount, mode, note: '' },
         `${r.label} ${mode === 'set' ? '=' : '+'}${fmtS(amount)}`, () => {
           const next = mode === 'set' ? amount : cur + amount;
           if (isLarge) { r.cells[month].v = next; if (noteChanged) r.cells[month].note = noteNew; }
@@ -613,9 +637,11 @@ function editCellSheet(row, month, isLarge) {
   });
 }
 
-function fixedEditSheet(row, col, label, val) {
+function fixedEditSheet(row, col, label, val, isFormula) {
   openSheet(`
     <h2>${esc(label)}</h2><div class="sub">${col === 'C' ? 'Monthly amount' : 'Amount'} · currently ${fmt(val)}</div>
+    ${isFormula ? `<div class="warn">This cell is calculated by a formula in your sheet.
+      Saving a number here replaces that formula permanently.</div>` : ''}
     <div class="amount-input"><span class="cur">₹</span>
       <input id="fx-amt" inputmode="decimal" value="${val ?? ''}"></div>
     <div class="gap"></div>
@@ -625,7 +651,7 @@ function fixedEditSheet(row, col, label, val) {
     $('#fx-go', sh).onclick = () => {
       const value = parseFloat($('#fx-amt', sh).value);
       if (isNaN(value)) return toast('Enter a number', true);
-      submitWrite('setValue', { fyId: S.cfg.fyId, row, col, value }, `${label} = ${fmtS(value)}`);
+      submitWrite('setValue', { fyId: S.cfg.fyId, tab: S.cfg.fyTab, row, col, value }, `${label} = ${fmtS(value)}`);
     };
   });
 }
@@ -662,9 +688,9 @@ function confirmSheet({ title, body, danger = 'Remove', onYes }) {
   });
 }
 
-function switchFY(id, label) {
-  S.cfg.fyId = id; S.cfg.fyLabel = label; saveCfg();
-  S.model = cachedModel(id); S.logs = [];
+function switchFY(id, label, tab) {
+  S.cfg.fyId = id; S.cfg.fyTab = tab || null; S.cfg.fyLabel = label; saveCfg();
+  S.model = cachedModel(); S.logs = [];
   renderIfCurrent(); refresh(!!S.model);
 }
 
@@ -672,15 +698,15 @@ function fyPickerSheet() {
   openSheet(`
     <h2>Financial year</h2><div class="sub">Each FY is its own Google Sheet</div>
     <div class="card tight" style="box-shadow:none">
-    ${S.fys.map((f) => `<button class="row" style="width:100%;text-align:left" data-fyid="${esc(f.id)}" data-fylabel="${esc(f.label)}">
+    ${S.fys.map((f) => `<button class="row" style="width:100%;text-align:left" data-fyid="${esc(f.id)}" data-fylabel="${esc(f.label)}" data-fytab="${esc(f.tab || '')}">
       <div class="dot">${esc(f.label.slice(2))}</div>
       <div class="grow"><div class="t">${esc(f.label)}</div><div class="s">${esc(f.name)}</div></div>
-      ${f.id === S.cfg.fyId ? '<span class="good">✓</span>' : ''}
+      ${f.id === S.cfg.fyId && (f.tab || null) === S.cfg.fyTab ? '<span class="good">✓</span>' : ''}
     </button>`).join('') || '<div class="empty">No FY sheets found</div>'}
     </div>`, (sh) => {
     sh.onclick = (e) => {
       const b = e.target.closest('[data-fyid]'); if (!b) return;
-      switchFY(b.dataset.fyid, b.dataset.fylabel); closeSheet();
+      switchFY(b.dataset.fyid, b.dataset.fylabel, b.dataset.fytab || null); closeSheet();
     };
   });
 }
@@ -714,9 +740,9 @@ async function submitWrite(action, params, label, optimistic, extra) {
 async function structuralWrite(action, params, okMsg) {
   toast('Saving…');
   try {
-    const model = await api(action, { fyId: S.cfg.fyId, ...params });
+    const model = await api(action, { fyId: S.cfg.fyId, tab: S.cfg.fyTab, ...params });
     S.model = model;
-    store.set('model.' + S.cfg.fyId, model);
+    store.set('model.' + fyKey(), model);
     toast(okMsg);
     renderIfCurrent();
   } catch (e) {
@@ -744,7 +770,7 @@ function bindView(name, arg) {
       case 'add': return addExpenseSheet();
       case 'addlarge': return addLargeSheet(a.row ? +a.row : undefined);
       case 'editcell': return editCellSheet(+a.row, +a.month, a.large === '1');
-      case 'fixed': return fixedEditSheet(+a.row, a.col, a.label, a.val === '' ? null : +a.val);
+      case 'fixed': return fixedEditSheet(+a.row, a.col, a.label, a.val === '' ? null : +a.val, a.fx === '1');
 
       /* category management */
       case 'addrow': {
@@ -794,7 +820,7 @@ function bindView(name, arg) {
       const b = e.target.closest('[data-theme]'); if (!b) return;
       S.cfg.theme = b.dataset.theme; saveCfg(); applyTheme(); renderIfCurrent();
     };
-    $$('.chip[data-fyid]').forEach((c) => (c.onclick = () => switchFY(c.dataset.fyid, c.dataset.fylabel)));
+    $$('.chip[data-fyid]').forEach((c) => (c.onclick = () => switchFY(c.dataset.fyid, c.dataset.fylabel, c.dataset.fytab || null)));
   }
 
   if (name === 'months') {
@@ -808,7 +834,7 @@ function bindView(name, arg) {
 applyTheme();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 if (S.cfg.url && S.cfg.fyId) {
-  S.model = cachedModel(S.cfg.fyId);
+  S.model = cachedModel();
   refresh(!!S.model);
   if (!S.fys.length) loadFYs();
   flushOutbox();
