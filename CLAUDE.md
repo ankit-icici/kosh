@@ -33,10 +33,42 @@ Labelling it "spent" was a real bug. Actual spend must be summed from D…O.
 Helpers in `app.js` keep the two apart: `M.varPlanned()` / `M.varSpent()`,
 `M.largePlanned()` / `M.largeSpent()`. Use them.
 
+### 1a. The owner extends the month formulas by hand — the app must not wait for them.
+
+`Total known expenses` (`=SUM(X18:X29)`) and `Savings from monthly expenses`
+(`=$C$30-X30`) exist only for months the owner has "opened"; in FY27 they
+stopped at Aug while Sep was fully entered, so Sep's total and saving were
+blank everywhere. Therefore:
+
+- **Monthly derives** month totals, savings, spent/saved so far and "months
+  entered" from the category cells (`M.monthSpend`, `M.monthSaved`, …) using
+  those same definitions. A month counts once any category cell is non-blank.
+- **Home reads** the sheet's summary rows, and says so when an entered month
+  isn't totalled yet (`M.sheetBehind()`, `behindNote()`), offering *Add to sheet*.
+- **The script fills the gap** (`fillMonthFormulas`, Code.gs 1.4.0): after a
+  variable write, and on the `fillFormulas` action, it copies the nearest earlier
+  month's formula into an entered month's **empty** total/savings cell, then
+  checks the result against the cells (total = Σ categories, savings = C − total)
+  and **removes it again if it disagrees**. It never writes to an occupied cell.
+- A failure in that step must never turn a completed amount write into an error.
+
+### 1b. Month cells can hold text.
+
+The owner sometimes types notes straight into a month cell (FY27 Investments:
+`Stocks=-66k`, `MF=75k`). They read as 0. `writeMonthCell` refuses to write to
+such a cell — `Number(text) || 0` would otherwise replace the text — and the
+model passes it through as `cell.text` so the app shows it and doesn't offer Save.
+
+The sheet's `Remaining` was `=B47-B45+B46`, counting savings twice (B47 already
+includes B46). The owner corrected FY27 to `=B47-B45` on 2026-10-01; FY28 still
+had the old formula at that time.
+
 ### 2. Sections are found by label, never by row number.
 
 `sections()` in `Code.gs` scans column A for the anchor labels. Row numbers
-drift whenever anyone edits the sheet. Never hard-code a row.
+drift whenever anyone edits the sheet. Never hard-code a row. The scan covers
+the whole tab (`scanRows()`); a fixed 80-row cap used to cut the summary off
+once enough categories were added.
 
 ### 3. Every write carries the category name, and `resolveRow` checks it.
 

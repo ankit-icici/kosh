@@ -69,4 +69,4 @@ date, section, category, month, amount, mode, note, previous value, new value.
    nothing live. See [SETUP.md](SETUP.md).
 
 API actions: `ping`, `fys`, `get`, `log`, `addVariable`, `addLarge`, `setNote`,
-`setValue`, `addRow`, `renameRow`, `deleteRow`.
+`setValue`, `addRow`, `renameRow`, `deleteRow`, `fillFormulas`.

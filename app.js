@@ -185,25 +185,40 @@ const M = {
   months: () => S.model?.months?.length ? S.model.months : ['April','May','June','July','Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar'],
   varRows: () => S.model?.variable?.rows || [],
   largeRows: () => S.model?.large?.rows || [],
-  monthSpend: (i) => {
-    const t = S.model?.variable?.totalCells;
-    if (t && t[i] != null) return t[i];
-    return M.varRows().reduce((a, r) => a + (r.cells[i] || 0), 0);
+  /* Month totals and savings are worked out from the category cells, using
+     the sheet's own definitions — "Total known expenses" = SUM of the month's
+     column, "Savings" = monthly plan ($C$30) − that total — so a month is
+     right the moment it's entered, even before the sheet has formulas for it.
+     The owner adds those formulas month by month; see M.sheetBehind(). */
+  monthEntered: (i) => M.varRows().some((r) => r.cells[i] != null),
+  monthSpend: (i) => M.varRows().reduce((a, r) => a + (r.cells[i] || 0), 0),
+  budget: () => M.varRows().reduce((a, r) => a + (r.monthly || 0), 0),
+  monthSaved: (i) => (M.monthEntered(i) ? M.budget() - M.monthSpend(i) : null),
+  enteredMonths: () => M.months().map((_, i) => i).filter(M.monthEntered),
+  /* entered months the sheet itself isn't totalling yet, or totals differently */
+  sheetBehind: () => {
+    const v = S.model?.variable; if (!v) return { missing: [], differ: [] };
+    const missing = [], differ = [];
+    for (const i of M.enteredMonths()) {
+      const t = v.totalCells?.[i], sv = v.savingsCells?.[i];
+      if (t == null || (v.savingsCells && sv == null)) missing.push(i);
+      else if (Math.abs(t - M.monthSpend(i)) > 0.5 || (sv != null && Math.abs(sv - M.monthSaved(i)) > 0.5)) differ.push(i);
+    }
+    return { missing, differ };
   },
-  budget: () => S.model?.variable?.totalBudget ?? M.varRows().reduce((a, r) => a + (r.monthly || 0), 0),
   summaryVal: (label) => S.model?.summary?.find((s) => s.label.toLowerCase() === label.toLowerCase())?.value,
 
   /* Column B of a category row is what you PLANNED for the year;
      columns D..O are what actually went out. Keep the two apart. */
   varPlanned: () => M.varRows().reduce((a, r) => a + (r.total || 0), 0),
-  varSpent: () => (S.model?.variable?.totalCells || []).reduce((a, v) => a + (v || 0), 0),
-  varSaved: () => (S.model?.variable?.savingsCells || []).reduce((a, v) => a + (v || 0), 0),
+  varSpent: () => M.enteredMonths().reduce((a, i) => a + M.monthSpend(i), 0),
+  varSaved: () => M.enteredMonths().reduce((a, i) => a + M.monthSaved(i), 0),
   largePlanned: () => S.model?.large?.totalYear ?? M.largeRows().reduce((a, r) => a + (r.total || 0), 0),
   largeSpent: () => M.largeRows().reduce((a, r) => a + r.cells.reduce((b, c) => b + (c.v || 0), 0), 0),
   rowSpent: (r) => r.cells.reduce((a, c) => a + (c.v || 0), 0),
 };
 
-const BUILD = '2026-10-01.3';
+const BUILD = '2026-10-01.4';
 
 /* ─── UI primitives: toast + bottom sheet ──────────────────────────────── */
 let toastT;
@@ -273,7 +288,7 @@ function themeBtn() {
   return `<button class="iconbtn" data-act="theme" title="Theme">${ic}</button>`;
 }
 function loadingCard() { return `<div class="spin"></div>`; }
-const spentMonths = () => (S.model?.variable?.totalCells || []).filter((v) => v != null).length;
+const spentMonths = () => M.enteredMonths().length;
 function manageBtn(section, label = 'Manage categories') {
   return `<a class="btn ghost sm" href="#/manage/${section}">⚙&nbsp; ${label}</a>`;
 }
@@ -340,15 +355,34 @@ routes.home = () => {
       <div class="v num">${fmt(sv('Total expenses'))}</div>
       <div class="c">planned for the year</div></div>
     <div class="stat"><div class="l">Savings from monthly expenses</div>
-      <div class="v num ${M.varSaved() >= 0 ? 'good' : 'bad'}">${fmt(sv('Savings from monthly expenses'))}</div>
+      <div class="v num ${sv('Savings from monthly expenses') < 0 ? 'bad' : 'good'}">${fmt(sv('Savings from monthly expenses'))}</div>
       <div class="c">under budget so far</div></div>
     <div class="stat"><div class="l">Remaining</div>
       <div class="v num ${sv('Remaining') < 0 ? 'bad' : ''}">${fmt(sv('Remaining'))}</div>
       <div class="c">after the full-year plan</div></div>
   </div>
+  ${behindNote('home')}
   <p class="center small mut" style="margin-top:16px">
     ${esc(S.cfg.fyLabel)} · ${S.loading ? 'refreshing…' : 'straight from your sheet'}</p>`}`;
 };
+
+/* The sheet totals months with formulas the owner extends by hand. When an
+   entered month has none yet, the app's own figures (Monthly) are already
+   right, but anything read from the sheet (Home) leaves that month out. */
+function behindNote(where) {
+  const { missing, differ } = M.sheetBehind();
+  const names = (ix) => ix.map((i) => M.months()[i]).join(', ');
+  if (missing.length) return `<div class="card tight" style="border-color:var(--amber)"><div class="row">
+      <div class="grow"><div class="t">${esc(names(missing))} ${missing.length > 1 ? 'aren’t' : 'isn’t'} totalled in your sheet yet</div>
+      <div class="s">${where === 'home'
+        ? 'Savings, income and remaining here leave ' + (missing.length > 1 ? 'them' : 'it') + ' out until the sheet has the formulas.'
+        : 'The totals above are worked out from your entries. Add the Total and Savings formulas to the sheet so Home matches.'}</div></div>
+      <button class="pill" data-act="fillformulas">Add to sheet</button></div></div>`;
+  if (differ.length) return `<div class="card tight" style="border-color:var(--amber)"><div class="row"><div class="grow">
+      <div class="t">Your sheet totals ${esc(names(differ))} differently</div>
+      <div class="s">The sheet’s total or savings for ${differ.length > 1 ? 'those months' : 'that month'} doesn’t match the sum of its categories. Worth a look in the sheet.</div></div></div></div>`;
+  return '';
+}
 
 /* ─── view: months (full matrix) ───────────────────────────────────────── */
 routes.months = () => {
@@ -373,8 +407,9 @@ routes.months = () => {
   const totals = `<tr class="total"><td class="rowhead">Total</td>
     <td class="num">${fmtS(M.budget())}</td>
     ${months.map((_, i) => `<td class="num ${i === mi ? 'cur' : ''}">${fmtS(M.monthSpend(i))}</td>`).join('')}</tr>`;
-  const savings = m.variable?.savingsCells ? `<tr><td class="rowhead mut">Saved</td><td></td>
-    ${m.variable.savingsCells.map((v, i) => `<td class="num ${v > 0 ? 'good' : v < 0 ? 'bad' : 'zero'}">${v == null ? '' : fmtS(v)}</td>`).join('')}</tr>` : '';
+  const savings = `<tr><td class="rowhead mut">Saved</td><td></td>
+    ${months.map((_, i) => { const v = M.monthSaved(i);
+      return `<td class="num ${v > 0 ? 'good' : v < 0 ? 'bad' : 'zero'}">${v == null ? '' : fmtS(v)}</td>`; }).join('')}</tr>`;
 
   const planned = M.varPlanned(), spent = M.varSpent(), saved = M.varSaved();
 
@@ -398,6 +433,7 @@ routes.months = () => {
   <div class="matrix-wrap"><table class="matrix">
     <thead>${head}</thead><tbody>${body}${totals}${savings}</tbody>
   </table></div>
+  ${behindNote('months')}
   <div class="gap"></div>
   <button class="btn" data-act="add">＋&nbsp; Add expense</button>
   <div class="gap"></div>
@@ -462,11 +498,11 @@ function largeDetail(row) {
         : 'tap to set a plan'}</div></div>
   </div>
   <div class="card tight">
-    ${r.cells.map((c, i) => (c.v || c.note) ? `
+    ${r.cells.map((c, i) => (c.v || c.note || c.text) ? `
       <div class="row" style="align-items:flex-start;flex-wrap:wrap">
         <div class="grow"><div class="t">${esc(months[i])}${i === mi ? ' <span class="small" style="color:var(--acc-ink)">· now</span>' : ''}</div>
           ${c.note ? `<div class="note">${esc(c.note)}</div>` : ''}</div>
-        <div class="amt num">${fmtS(c.v || 0)}</div>
+        <div class="amt num">${c.text ? `<span class="small mut">“${esc(c.text)}”</span>` : fmtS(c.v || 0)}</div>
         <button class="pill" data-act="editcell" data-row="${r.row}" data-month="${i}" data-large="1" style="padding:6px 11px;font-size:12px">edit</button>
       </div>` : '').join('') || '<div class="empty">Nothing yet this year</div>'}
   </div>
@@ -624,7 +660,6 @@ function addExpenseSheet(pre = {}) {
       submitWrite('addVariable', { fyId: S.cfg.fyId, tab: S.cfg.fyTab, row: sel, label: cat?.label, month, amount, mode: 'add', note },
         `${cat?.label} +${fmtS(amount)}`, () => {
           if (cat) cat.cells[month] = (cat.cells[month] || 0) + amount;
-          if (S.model?.variable?.totalCells) S.model.variable.totalCells[month] += amount;
         });
     };
   });
@@ -678,6 +713,14 @@ function editCellSheet(row, month, isLarge) {
   if (!r) return;
   const cur = isLarge ? (r.cells[month].v || 0) : (r.cells[month] || 0);
   const note = isLarge ? r.cells[month].note : '';
+  const text = isLarge ? r.cells[month].text : null;
+  // a note typed into the month cell itself: any write would replace it
+  if (text) return openSheet(`
+    <h2>${esc(r.label)}</h2><div class="sub">${esc(months[month])}</div>
+    <div class="warn">This cell holds text in your sheet — “${esc(text)}” — so changing it here would lose that.
+      Edit it in Google Sheets.</div>
+    <div class="gap"></div>
+    <button class="btn ghost" onclick="closeSheet()">OK</button>`);
   openSheet(`
     <h2>${esc(r.label)}</h2><div class="sub">${esc(months[month])} · currently ${fmt(cur)}</div>
     <div class="seg" id="ec-mode">
@@ -825,12 +868,13 @@ async function submitWrite(action, params, label, optimistic, follow = []) {
   renderIfCurrent();
   toast('Saving…');
   const tail = follow.length ? ' The note wasn’t saved.' : '';
+  let res;
   try {
-    await api(action, params);
+    res = await api(action, params);
   } catch (e) {
     if (e.lost) return unconfirmed(`“${label}”`, tail);
     // the script refused before touching the cell
-    if (/token|formula|Bad|Unknown|required|section|moved/i.test(String(e.message))) {
+    if (/token|formula|holds text|Bad|Unknown|required|section|moved/i.test(String(e.message))) {
       toast(tail ? e.message.replace(/[.\s]*$/, '.') + tail : e.message, true); return refresh(true);
     }
     return unconfirmed(`“${label}” (${e.message})`, tail);
@@ -839,10 +883,33 @@ async function submitWrite(action, params, label, optimistic, follow = []) {
   for (const f of follow) {
     try { await api(f.action, f.params); } catch { failed.push(f.label); }
   }
+  const added = res?.filled?.length ? ` · added ${res.filled.join(', ')} totals to your sheet` : '';
   toast(failed.length
     ? `Saved “${label}”, but couldn’t confirm the ${failed.join(', ')} — open the cell and check it`
-    : 'Saved ✓', failed.length > 0);
-  refresh(true);
+    : 'Saved ✓' + added, failed.length > 0);
+  const warn = res?.warnings?.length ? res.warnings.join(' · ') : '';
+  const reread = await refresh(true);
+  if (!reread) toast('Saved — but couldn’t re-read the sheet, so other totals may be out of date', true);
+  else if (warn) toast(warn, true);
+}
+
+/* "Add to sheet": copies the previous month's Total/Savings formulas into
+   the empty cells of entered months. The script only ever fills empty cells,
+   so a lost reply is safe to check by re-reading. */
+async function fillFormulas() {
+  if (isOffline()) return toast('You’re offline — nothing was changed', true);
+  toast('Adding formulas to your sheet…');
+  try {
+    const r = await api('fillFormulas', { fyId: S.cfg.fyId, tab: S.cfg.fyTab });
+    S.model = r.model; store.set('model.' + fyKey(), r.model);
+    renderIfCurrent();
+    if (r.warnings?.length) toast(r.warnings.join(' · '), true);
+    else toast(r.filled.length ? `Added ${r.filled.join(', ')} totals to your sheet ✓` : 'Nothing to add — the sheet is up to date');
+  } catch (e) {
+    if (e.lost) return unconfirmed('the new formulas');
+    toast(/Unknown action/.test(e.message)
+      ? 'This needs the updated Apps Script (1.4.0) — Settings shows the version you have' : e.message, true);
+  }
 }
 
 /* structural writes: never queued — row numbers would go stale.
@@ -881,6 +948,7 @@ function bindView(name, arg) {
         return toast('Theme: ' + S.cfg.theme);
       }
       case 'add': return addExpenseSheet();
+      case 'fillformulas': return fillFormulas();
       case 'addlarge': return addLargeSheet(a.row ? +a.row : undefined);
       case 'editcell': return editCellSheet(+a.row, +a.month, a.large === '1');
       case 'fixed': return fixedEditSheet(+a.row, a.col, a.label, a.val === '' ? null : +a.val,

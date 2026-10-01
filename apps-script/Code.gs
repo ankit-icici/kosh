@@ -34,10 +34,10 @@ var KNOWN_FYS = {
   'FY27': '16Vi-MFXjRknsbupGWVo5cueU_2i93LPST34Jhyo-NLo'
 };
 
-var VERSION = '1.3.0';
+var VERSION = '1.4.0';
 var MONTH_COL_START = 4;   // column D
 var MONTH_COUNT = 12;      // D..O = Apr..Mar
-var SCAN_ROWS = 80;        // how many rows to scan for sections
+var SCAN_MIN = 80;         // scan at least this many rows; more if the tab is longer
 var LOG_SHEET = '_AppLog';
 
 // ─── HTTP entry points ──────────────────────────────────────────────────────
@@ -67,6 +67,7 @@ function doPost(e) {
       case 'addRow':      out = addRow(req); break;
       case 'renameRow':   out = renameRow(req); break;
       case 'deleteRow':   out = deleteRowAction(req); break;
+      case 'fillFormulas': out = fillFormulasAction(req); break;
       default: return respond({ ok: false, error: 'Unknown action: ' + req.action });
     }
     return respond({ ok: true, data: out });
@@ -149,7 +150,7 @@ function openFY(fyId, tab) {
 // ─── model ──────────────────────────────────────────────────────────────────
 function getModel(fyId, tab) {
   var o = openFY(fyId, tab), sheet = o.sheet;
-  var rng = sheet.getRange(1, 1, SCAN_ROWS, MONTH_COL_START - 1 + MONTH_COUNT);
+  var rng = sheet.getRange(1, 1, scanRows(sheet), MONTH_COL_START - 1 + MONTH_COUNT);
   var vals = rng.getValues();
   var formulas = rng.getFormulas();
   var notes = rng.getNotes();
@@ -210,7 +211,8 @@ function getModel(fyId, tab) {
         break;
       }
       variable.rows.push({ row: r3 + 1, label: L, total: num(vals[r3][1]),
-                           monthly: num(vals[r3][2]), cells: monthCells(r3) });
+                           monthly: num(vals[r3][2]), monthlyLocked: !!formulas[r3][2],
+                           cells: monthCells(r3) });
     }
   }
 
@@ -224,8 +226,10 @@ function getModel(fyId, tab) {
       if (/^total unknown/i.test(L2)) { large.totalYear = num(vals[r4][1]); break; }
       var cells = [];
       for (var c2 = 0; c2 < MONTH_COUNT; c2++) {
-        cells.push({ v: num(vals[r4][MONTH_COL_START - 1 + c2]),
-                     note: notes[r4][MONTH_COL_START - 1 + c2] || '' });
+        var raw = vals[r4][MONTH_COL_START - 1 + c2];
+        var cell = { v: num(raw), note: notes[r4][MONTH_COL_START - 1 + c2] || '' };
+        if (isText(raw)) cell.text = String(raw);
+        cells.push(cell);
       }
       large.rows.push({ row: r4 + 1, label: L2, total: num(vals[r4][1]),
                         totalLocked: !!formulas[r4][1], cells: cells });
@@ -289,6 +293,8 @@ function writeMonthCell(req, section) {
     row = resolveRow(sheet, section, row, req.label);
     var cell = sheet.getRange(row, MONTH_COL_START + month);
     if (cell.getFormula()) throw new Error('That cell contains a formula — edit it in the sheet.');
+    if (isText(cell.getValue()))       // e.g. "Stocks=-66k": adding to it would wipe the text
+      throw new Error('That cell holds text (“' + cell.getValue() + '”) — edit it in the sheet.');
     var prev = Number(cell.getValue()) || 0;
     var next = mode === 'add' ? prev + amount : amount;
     cell.setValue(next);
@@ -304,8 +310,17 @@ function writeMonthCell(req, section) {
     var monthLabel = monthName(sheet, month);
     appendLog(o.ss, [new Date(), section, catLabel, monthLabel, amount, mode, req.note || '', prev, next]);
     SpreadsheetApp.flush();
+
+    // The amount is in. Filling formulas is a bonus: it must never turn a
+    // completed write into an error reply, or the app would doubt the write.
+    var fill = { filled: [], warnings: [] };
+    if (section === 'variable') {
+      try { fill = fillMonthFormulas(o.ss, sheet); }
+      catch (e) { fill.warnings.push(String(e && e.message || e)); }
+    }
     return { row: row, month: month, prev: prev, value: next,
-             note: cell.getNote() || '', category: catLabel };
+             note: cell.getNote() || '', category: catLabel,
+             filled: fill.filled, warnings: fill.warnings };
   } finally { lock.releaseLock(); }
 }
 
@@ -379,7 +394,8 @@ function readLog(req) {
  * Rows with a blank label (spacers, the repeated month header) are skipped.
  */
 function sections(sheet) {
-  var colA = sheet.getRange(1, 1, SCAN_ROWS, 1).getValues()
+  var n = scanRows(sheet);
+  var colA = sheet.getRange(1, 1, n, 1).getValues()
     .map(function (r) { return String(r[0] || '').trim(); });
   function find(txt) {
     for (var i = 0; i < colA.length; i++)
@@ -390,7 +406,7 @@ function sections(sheet) {
   function block(headerRow, stopRe, stopOnBlank) {
     if (headerRow < 0) return null;
     var first = headerRow + 1, last = first - 1;
-    for (var r = first; r <= SCAN_ROWS; r++) {
+    for (var r = first; r <= n; r++) {
       var L = colA[r - 1];
       if (!L) { if (stopOnBlank) break; continue; }   // large/variable have spacer rows
       if (stopRe && stopRe.test(L)) break;
@@ -488,9 +504,126 @@ function deleteRowAction(req) {
   } finally { lock.releaseLock(); }
 }
 
+// ─── helpers ────────────────────────────────────────────────────────────────
+/* Every row with content, never fewer than SCAN_MIN. A fixed cap silently cut
+   off the summary rows once enough categories had been added. */
+function scanRows(sheet) {
+  return Math.max(SCAN_MIN, Math.min(sheet.getLastRow(), sheet.getMaxRows()));
+}
+
+/* A non-empty cell that isn't a number — a note typed into a month cell. */
+function isText(v) {
+  return typeof v === 'string' && v.trim() !== '' && isNaN(Number(v));
+}
+
+// ─── month formulas ─────────────────────────────────────────────────────────
+/**
+ * The owner extends "Total known expenses" and the "Savings from monthly
+ * expenses" row one month at a time, so a month can hold entries before it
+ * has a total. For each month that has entries but an EMPTY total/savings
+ * cell, copy the nearest earlier month's formula across (relative refs shift
+ * to the new column: =SUM(H18:H29) → =SUM(I18:I29), =$C$30-H30 → =$C$30-I30).
+ *
+ * Never overwrites a cell that holds anything. After filling, the result is
+ * checked against the month's own cells — total = sum of categories,
+ * savings = monthly plan − total — and removed again if it disagrees, so an
+ * unusual formula is never propagated.
+ */
+function fillMonthFormulas(ss, sheet) {
+  var out = { filled: [], warnings: [] };
+  var sec = sections(sheet).variable;
+  if (!sec || sec.last < sec.first) return out;
+
+  var n = scanRows(sheet);
+  var colA = sheet.getRange(1, 1, n, 1).getValues()
+    .map(function (r) { return String(r[0] || '').trim(); });
+  var totalRow = -1;
+  for (var r = sec.first; r <= n; r++) if (/^total known/i.test(colA[r - 1])) { totalRow = r; break; }
+  if (totalRow < 0) return out;
+  var savingsRow = totalRow < n && /^savings/i.test(colA[totalRow]) ? totalRow + 1 : -1;
+
+  var height = sec.last - sec.first + 1;
+  var cats = sheet.getRange(sec.first, MONTH_COL_START, height, MONTH_COUNT).getValues();
+  var isCat = colA.slice(sec.first - 1, sec.last).map(function (L) { return !!L; });
+  function entered(m) {
+    for (var i = 0; i < height; i++) if (isCat[i] && cats[i][m] !== '' && cats[i][m] != null) return true;
+    return false;
+  }
+  function catSum(m) {
+    var t = 0;
+    for (var i = 0; i < height; i++) if (isCat[i]) t += Number(cats[i][m]) || 0;
+    return t;
+  }
+
+  function rowState(row) {
+    if (row < 0) return null;
+    var rg = sheet.getRange(row, MONTH_COL_START, 1, MONTH_COUNT);
+    return { row: row, f: rg.getFormulas()[0], v: rg.getValues()[0] };
+  }
+  var tot = rowState(totalRow), sav = rowState(savingsRow);
+  var budget = Number(sheet.getRange(totalRow, 3).getValue()) || 0;     // column C: monthly plan
+
+  // copy the nearest earlier formula in this row into month m; returns the source month or -1
+  function fillCell(st, m) {
+    if (!st || st.f[m] || (st.v[m] !== '' && st.v[m] != null)) return -1;   // occupied: leave it
+    for (var k = m - 1; k >= 0; k--) {
+      if (!st.f[k]) continue;
+      sheet.getRange(st.row, MONTH_COL_START + k)
+           .copyTo(sheet.getRange(st.row, MONTH_COL_START + m), SpreadsheetApp.CopyPasteType.PASTE_FORMULA, false);
+      st.f[m] = '(filled)';
+      return k;
+    }
+    return -1;
+  }
+
+  var months = sheet.getRange(sec.first - 1, MONTH_COL_START, 1, MONTH_COUNT).getValues()[0];
+  var done = [];
+  for (var m = 0; m < MONTH_COUNT; m++) {
+    if (!entered(m)) continue;
+    var a = fillCell(tot, m), b = fillCell(sav, m);
+    if (a >= 0 || b >= 0) done.push({ m: m, tot: a >= 0, sav: b >= 0, from: Math.max(a, b) });
+  }
+  if (!done.length) return out;
+  SpreadsheetApp.flush();
+
+  done.forEach(function (d) {
+    var label = String(months[d.m] || d.m);
+    var totalNow = Number(sheet.getRange(totalRow, MONTH_COL_START + d.m).getValue());
+    var ok = Math.abs(totalNow - catSum(d.m)) < 0.005;
+    if (ok && savingsRow > 0) {
+      var savNow = Number(sheet.getRange(savingsRow, MONTH_COL_START + d.m).getValue());
+      ok = Math.abs(savNow - (budget - totalNow)) < 0.005;
+    }
+    if (!ok) {
+      if (d.tot) sheet.getRange(totalRow, MONTH_COL_START + d.m).clearContent();
+      if (d.sav) sheet.getRange(savingsRow, MONTH_COL_START + d.m).clearContent();
+      out.warnings.push(label + ': the copied formulas didn’t add up, so they were removed — please fill ' +
+                        label + '’s total and savings in the sheet');
+      return;
+    }
+    out.filled.push(label);
+    appendLog(ss, [new Date(), 'variable', 'Total + Savings formulas', label, '', 'fill-formulas',
+                   'copied from ' + String(months[d.from] || d.from), '', '']);
+  });
+  SpreadsheetApp.flush();
+  return out;
+}
+
+/* Explicit, from the app's "Add to sheet" button. Only ever fills empty
+   cells, so running it twice is harmless. */
+function fillFormulasAction(req) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var o = openFY(req.fyId, req.tab);
+    var fill = fillMonthFormulas(o.ss, o.sheet);
+    return { filled: fill.filled, warnings: fill.warnings, model: getModel(req.fyId, req.tab) };
+  } finally { lock.releaseLock(); }
+}
+
 function monthName(sheet, monthIdx) {
   // find the variable header row to read the month label
-  var colA = sheet.getRange(1, 1, SCAN_ROWS, 1).getValues();
+  var colA = sheet.getRange(1, 1, scanRows(sheet), 1).getValues();
   for (var r = 0; r < colA.length; r++) {
     if (String(colA[r][0]).trim() === 'Monthly Variable Expenses (known)') {
       return String(sheet.getRange(r + 1, MONTH_COL_START + monthIdx).getValue() || '');
