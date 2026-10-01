@@ -50,6 +50,13 @@ blank everywhere. Therefore:
   month's formula into an entered month's **empty** total/savings cell, then
   checks the result against the cells (total = Σ categories, savings = C − total)
   and **removes it again if it disagrees**. It never writes to an occupied cell.
+- **"Entered" means a non-zero amount**, in the app and the script alike. Plan − 0
+  is not a saving: a formula left on an empty month counts its whole budget as
+  saved and inflates Home. On 2026-10-01 a ₹1 Oct entry, set back to 0, left
+  Oct's formulas behind and added ₹1,14,000 of phantom savings. So the script
+  also **removes** total/savings formulas from months with no entries — only
+  ones `_AppLog` says it filled, and only while they still match the previous
+  month's R1C1 pattern. The owner's own formulas are never removed.
 - A failure in that step must never turn a completed amount write into an error.
 
 ### 1b. Month cells can hold text.

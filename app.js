@@ -189,22 +189,28 @@ const M = {
      the sheet's own definitions — "Total known expenses" = SUM of the month's
      column, "Savings" = monthly plan ($C$30) − that total — so a month is
      right the moment it's entered, even before the sheet has formulas for it.
-     The owner adds those formulas month by month; see M.sheetBehind(). */
-  monthEntered: (i) => M.varRows().some((r) => r.cells[i] != null),
+     The owner adds those formulas month by month; see M.sheetBehind().
+     A month counts once any category has a NON-ZERO amount: a month of blanks
+     and zeros has no spending yet, and plan − 0 isn't a saving. */
+  monthEntered: (i) => M.varRows().some((r) => !!r.cells[i]),
   monthSpend: (i) => M.varRows().reduce((a, r) => a + (r.cells[i] || 0), 0),
   budget: () => M.varRows().reduce((a, r) => a + (r.monthly || 0), 0),
   monthSaved: (i) => (M.monthEntered(i) ? M.budget() - M.monthSpend(i) : null),
   enteredMonths: () => M.months().map((_, i) => i).filter(M.monthEntered),
-  /* entered months the sheet itself isn't totalling yet, or totals differently */
+  /* where the sheet's own month formulas disagree with the entries:
+     missing — entered, but the sheet isn't totalling it yet
+     extra   — no entries, yet the sheet counts a saving for it (plan − 0)
+     differ  — entered, but the sheet's total/saving doesn't match the cells */
   sheetBehind: () => {
-    const v = S.model?.variable; if (!v) return { missing: [], differ: [] };
-    const missing = [], differ = [];
-    for (const i of M.enteredMonths()) {
+    const v = S.model?.variable; if (!v) return { missing: [], extra: [], differ: [] };
+    const missing = [], extra = [], differ = [];
+    M.months().forEach((_, i) => {
       const t = v.totalCells?.[i], sv = v.savingsCells?.[i];
+      if (!M.monthEntered(i)) { if (sv) extra.push(i); return; }
       if (t == null || (v.savingsCells && sv == null)) missing.push(i);
       else if (Math.abs(t - M.monthSpend(i)) > 0.5 || (sv != null && Math.abs(sv - M.monthSaved(i)) > 0.5)) differ.push(i);
-    }
-    return { missing, differ };
+    });
+    return { missing, extra, differ };
   },
   summaryVal: (label) => S.model?.summary?.find((s) => s.label.toLowerCase() === label.toLowerCase())?.value,
 
@@ -218,7 +224,7 @@ const M = {
   rowSpent: (r) => r.cells.reduce((a, c) => a + (c.v || 0), 0),
 };
 
-const BUILD = '2026-10-01.4';
+const BUILD = '2026-10-01.5';
 
 /* ─── UI primitives: toast + bottom sheet ──────────────────────────────── */
 let toastT;
@@ -370,8 +376,16 @@ routes.home = () => {
    entered month has none yet, the app's own figures (Monthly) are already
    right, but anything read from the sheet (Home) leaves that month out. */
 function behindNote(where) {
-  const { missing, differ } = M.sheetBehind();
+  const { missing, extra, differ } = M.sheetBehind();
   const names = (ix) => ix.map((i) => M.months()[i]).join(', ');
+  if (extra.length) {
+    const amt = extra.reduce((a, i) => a + (S.model.variable.savingsCells[i] || 0), 0);
+    return `<div class="card tight" style="border-color:var(--amber)"><div class="row">
+      <div class="grow"><div class="t">Your sheet counts ${fmt(amt)} of savings for ${esc(names(extra))}</div>
+      <div class="s">${extra.length > 1 ? 'Those months have' : 'That month has'} no entries yet, so this isn’t a real saving${
+        where === 'home' ? ' — savings, income and remaining here include it' : ''}.</div></div>
+      <button class="pill" data-act="fillformulas">Fix in sheet</button></div></div>`;
+  }
   if (missing.length) return `<div class="card tight" style="border-color:var(--amber)"><div class="row">
       <div class="grow"><div class="t">${esc(names(missing))} ${missing.length > 1 ? 'aren’t' : 'isn’t'} totalled in your sheet yet</div>
       <div class="s">${where === 'home'
@@ -883,7 +897,8 @@ async function submitWrite(action, params, label, optimistic, follow = []) {
   for (const f of follow) {
     try { await api(f.action, f.params); } catch { failed.push(f.label); }
   }
-  const added = res?.filled?.length ? ` · added ${res.filled.join(', ')} totals to your sheet` : '';
+  const added = (res?.filled?.length ? ` · added ${res.filled.join(', ')} totals to your sheet` : '') +
+                (res?.removed?.length ? ` · removed ${res.removed.join(', ')} formulas (no entries)` : '');
   toast(failed.length
     ? `Saved “${label}”, but couldn’t confirm the ${failed.join(', ')} — open the cell and check it`
     : 'Saved ✓' + added, failed.length > 0);
@@ -893,18 +908,25 @@ async function submitWrite(action, params, label, optimistic, follow = []) {
   else if (warn) toast(warn, true);
 }
 
-/* "Add to sheet": copies the previous month's Total/Savings formulas into
-   the empty cells of entered months. The script only ever fills empty cells,
-   so a lost reply is safe to check by re-reading. */
+/* "Add to sheet" / "Fix in sheet": copies the previous month's Total/Savings
+   formulas into the empty cells of entered months, and removes ones Kosh added
+   to months that have no entries again. Running it twice changes nothing, so a
+   lost reply is safe to check by re-reading. */
 async function fillFormulas() {
   if (isOffline()) return toast('You’re offline — nothing was changed', true);
-  toast('Adding formulas to your sheet…');
+  toast('Updating your sheet…');
   try {
     const r = await api('fillFormulas', { fyId: S.cfg.fyId, tab: S.cfg.fyTab });
     S.model = r.model; store.set('model.' + fyKey(), r.model);
     renderIfCurrent();
+    const did = [r.filled?.length ? `added ${r.filled.join(', ')} totals` : '',
+                 r.removed?.length ? `removed ${r.removed.join(', ')} formulas (no entries yet)` : ''].filter(Boolean).join(' and ');
     if (r.warnings?.length) toast(r.warnings.join(' · '), true);
-    else toast(r.filled.length ? `Added ${r.filled.join(', ')} totals to your sheet ✓` : 'Nothing to add — the sheet is up to date');
+    else if (did) toast(did[0].toUpperCase() + did.slice(1) + ' ✓');
+    else if (M.sheetBehind().extra.length) toast(r.removed === undefined     // script older than 1.5.0
+      ? 'Removing these needs the updated Apps Script (1.5.0) — Settings shows the version you have'
+      : 'Those formulas weren’t added by Kosh, so they were left alone — remove them in the sheet', true);
+    else toast('Nothing to change — the sheet is up to date');
   } catch (e) {
     if (e.lost) return unconfirmed('the new formulas');
     toast(/Unknown action/.test(e.message)

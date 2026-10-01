@@ -34,7 +34,7 @@ var KNOWN_FYS = {
   'FY27': '16Vi-MFXjRknsbupGWVo5cueU_2i93LPST34Jhyo-NLo'
 };
 
-var VERSION = '1.4.0';
+var VERSION = '1.5.0';
 var MONTH_COL_START = 4;   // column D
 var MONTH_COUNT = 12;      // D..O = Apr..Mar
 var SCAN_MIN = 80;         // scan at least this many rows; more if the tab is longer
@@ -313,14 +313,14 @@ function writeMonthCell(req, section) {
 
     // The amount is in. Filling formulas is a bonus: it must never turn a
     // completed write into an error reply, or the app would doubt the write.
-    var fill = { filled: [], warnings: [] };
+    var fill = { filled: [], removed: [], warnings: [] };
     if (section === 'variable') {
       try { fill = fillMonthFormulas(o.ss, sheet); }
       catch (e) { fill.warnings.push(String(e && e.message || e)); }
     }
     return { row: row, month: month, prev: prev, value: next,
              note: cell.getNote() || '', category: catLabel,
-             filled: fill.filled, warnings: fill.warnings };
+             filled: fill.filled, removed: fill.removed, warnings: fill.warnings };
   } finally { lock.releaseLock(); }
 }
 
@@ -528,9 +528,17 @@ function isText(v) {
  * checked against the month's own cells — total = sum of categories,
  * savings = monthly plan − total — and removed again if it disagrees, so an
  * unusual formula is never propagated.
+ *
+ * The reverse matters as much: savings = plan − 0 for a month with no
+ * spending, so a formula left on an empty month counts its whole budget as
+ * saved. "Entered" therefore means a NON-ZERO amount, and when a month we
+ * filled is empty again (a mistaken entry set back to 0 or cleared), its
+ * formulas are removed — but only cells this script filled (per _AppLog) and
+ * that still hold the same pattern as the month before. The owner's own
+ * formulas are never touched.
  */
 function fillMonthFormulas(ss, sheet) {
-  var out = { filled: [], warnings: [] };
+  var out = { filled: [], removed: [], warnings: [] };
   var sec = sections(sheet).variable;
   if (!sec || sec.last < sec.first) return out;
 
@@ -545,8 +553,8 @@ function fillMonthFormulas(ss, sheet) {
   var height = sec.last - sec.first + 1;
   var cats = sheet.getRange(sec.first, MONTH_COL_START, height, MONTH_COUNT).getValues();
   var isCat = colA.slice(sec.first - 1, sec.last).map(function (L) { return !!L; });
-  function entered(m) {
-    for (var i = 0; i < height; i++) if (isCat[i] && cats[i][m] !== '' && cats[i][m] != null) return true;
+  function entered(m) {        // any non-zero amount; a month of blanks and zeros has no spending yet
+    for (var i = 0; i < height; i++) if (isCat[i] && Number(cats[i][m])) return true;
     return false;
   }
   function catSum(m) {
@@ -577,6 +585,7 @@ function fillMonthFormulas(ss, sheet) {
   }
 
   var months = sheet.getRange(sec.first - 1, MONTH_COL_START, 1, MONTH_COUNT).getValues()[0];
+  removeEmptyMonthFormulas(ss, sheet, months, entered, tot, sav, out);
   var done = [];
   for (var m = 0; m < MONTH_COUNT; m++) {
     if (!entered(m)) continue;
@@ -609,6 +618,46 @@ function fillMonthFormulas(ss, sheet) {
   return out;
 }
 
+/* Months this script has filled, from _AppLog ("fill-formulas" rows). */
+function filledByKosh(ss) {
+  var sh = ss.getSheetByName(LOG_SHEET), seen = {};
+  if (!sh || sh.getLastRow() < 1) return seen;
+  sh.getRange(1, 1, sh.getLastRow(), 6).getValues().forEach(function (r) {
+    var what = String(r[2]), month = String(r[3]), mode = String(r[5]);
+    if (what !== 'Total + Savings formulas') return;
+    if (mode === 'fill-formulas') seen[month] = true;
+    if (mode === 'unfill-formulas') delete seen[month];
+  });
+  return seen;
+}
+
+/* Clear total/savings formulas that this script added to months which now have
+   no spending. Kept if the owner wrote them, or if they no longer match the
+   neighbouring month's pattern (someone edited them). */
+function removeEmptyMonthFormulas(ss, sheet, months, entered, tot, sav, out) {
+  var ours = null;
+  [tot, sav].forEach(function (st) {
+    if (!st) return;
+    var r1c1 = sheet.getRange(st.row, MONTH_COL_START, 1, MONTH_COUNT).getFormulasR1C1()[0];
+    for (var m = 1; m < MONTH_COUNT; m++) {
+      if (!st.f[m] || entered(m)) continue;
+      var label = String(months[m] || m);
+      ours = ours || filledByKosh(ss);
+      if (!ours[label]) continue;                                  // not ours: leave it
+      var k = m - 1; while (k >= 0 && !r1c1[k]) k--;
+      if (k < 0 || r1c1[k] !== r1c1[m]) continue;                  // edited since: leave it
+      sheet.getRange(st.row, MONTH_COL_START + m).clearContent();
+      st.f[m] = ''; st.v[m] = '';
+      if (out.removed.indexOf(label) < 0) out.removed.push(label);
+    }
+  });
+  out.removed.forEach(function (label) {
+    appendLog(ss, [new Date(), 'variable', 'Total + Savings formulas', label, '', 'unfill-formulas',
+                   'month has no entries', '', '']);
+  });
+  if (out.removed.length) SpreadsheetApp.flush();
+}
+
 /* Explicit, from the app's "Add to sheet" button. Only ever fills empty
    cells, so running it twice is harmless. */
 function fillFormulasAction(req) {
@@ -617,7 +666,7 @@ function fillFormulasAction(req) {
   try {
     var o = openFY(req.fyId, req.tab);
     var fill = fillMonthFormulas(o.ss, o.sheet);
-    return { filled: fill.filled, warnings: fill.warnings, model: getModel(req.fyId, req.tab) };
+    return { filled: fill.filled, removed: fill.removed, warnings: fill.warnings, model: getModel(req.fyId, req.tab) };
   } finally { lock.releaseLock(); }
 }
 
