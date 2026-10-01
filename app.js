@@ -224,7 +224,7 @@ const M = {
   rowSpent: (r) => r.cells.reduce((a, c) => a + (c.v || 0), 0),
 };
 
-const BUILD = '2026-10-01.5';
+const BUILD = '2026-10-01.6';
 
 /* ─── UI primitives: toast + bottom sheet ──────────────────────────────── */
 let toastT;
