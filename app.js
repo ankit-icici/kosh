@@ -123,9 +123,10 @@ async function flushOutbox() {
   if (!S.outbox.length || S.syncing || isOffline()) return;
   S.syncing = true;
   const batch = S.outbox.slice(), remaining = [], unsure = [];
+  let synced = 0;
   for (const item of batch) {
     if (isOffline()) { remaining.push(item); continue; }  // went offline mid-flush: nothing sent
-    try { await api(item.action, item.params); }
+    try { await api(item.action, item.params); synced++; }
     catch (e) {
       // sent, but no clean success: it may have applied, so it is never re-sent
       unsure.push(item.label + (e.lost ? '' : ' (' + e.message + ')'));
@@ -134,7 +135,9 @@ async function flushOutbox() {
   // keep anything queued while this flush was running
   S.outbox = remaining.concat(S.outbox.filter((i) => !batch.includes(i)));
   store.set('outbox', S.outbox); S.syncing = false;
-  if (unsure.length) toast('Couldn’t confirm: ' + unsure.join(', ') + ' — check the sheet before re-entering', true);
+  const done = synced ? `Synced ${synced} entr${synced > 1 ? 'ies' : 'y'}` : '';
+  if (unsure.length) toast((done ? done + '. ' : '') + 'Couldn’t confirm: ' + unsure.join(', ') + ' — check the sheet before re-entering', true);
+  else if (done) toast(done + ' ✓');
   refresh(true);
   renderIfCurrent();
 }
@@ -200,7 +203,7 @@ const M = {
   rowSpent: (r) => r.cells.reduce((a, c) => a + (c.v || 0), 0),
 };
 
-const BUILD = '2026-10-01.2';
+const BUILD = '2026-10-01.3';
 
 /* ─── UI primitives: toast + bottom sheet ──────────────────────────────── */
 let toastT;
@@ -212,23 +215,35 @@ function toast(msg, err = false) {
   toastT = setTimeout(() => { el.className = ''; setTimeout(() => (el.hidden = true), 350); }, err ? 3800 : 2000);
 }
 
+let sheetOpen = false, sheetCloseT, backPending = false;
 function openSheet(html, onOpen) {
   const bd = $('#sheet-backdrop'), sh = $('#sheet');
+  clearTimeout(sheetCloseT);            // a sheet closed a moment ago must not wipe this one
+  sheetOpen = true;
   sh.innerHTML = '<div class="grab"></div>' + html;
   bd.hidden = sh.hidden = false;
   requestAnimationFrame(() => { bd.classList.add('show'); sh.classList.add('show'); });
   bd.onclick = () => closeSheet();
-  history.pushState({ sheet: true }, '');
+  if (!backPending) history.pushState({ sheet: true }, '');   // else popstate pushes it
   onOpen?.(sh);
 }
 function closeSheet(viaPop = false) {
   const bd = $('#sheet-backdrop'), sh = $('#sheet');
-  if (sh.hidden) return;
+  if (!sheetOpen) return;               // already closing: a second timer would wipe the next sheet
+  sheetOpen = false;
   bd.classList.remove('show'); sh.classList.remove('show');
-  setTimeout(() => { bd.hidden = sh.hidden = true; sh.innerHTML = ''; }, 320);
-  if (viaPop !== true && history.state?.sheet) history.back();
+  sheetCloseT = setTimeout(() => { bd.hidden = sh.hidden = true; sh.innerHTML = ''; }, 320);
+  if (viaPop !== true && history.state?.sheet) { backPending = true; history.back(); }
 }
-addEventListener('popstate', () => { closeSheet(true); route(); });
+/* closeSheet's history.back() is async. If the next sheet opens before it
+   lands, that sheet's entry is pushed here, after the back, not before it. */
+addEventListener('popstate', () => {
+  if (backPending) {
+    backPending = false;
+    if (sheetOpen) history.pushState({ sheet: true }, '');
+  } else closeSheet(true);
+  route();
+});
 
 /* ─── router ───────────────────────────────────────────────────────────── */
 const routes = {};
