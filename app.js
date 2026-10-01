@@ -68,13 +68,22 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme
    twice), so they raise a `lost` error and the caller re-reads the sheet. */
 const READ_ACTIONS = new Set(['ping', 'fys', 'get', 'log']);
 
+const lostError = () => {
+  const err = new Error('Google dropped the reply — re-reading the sheet');
+  err.lost = true;
+  return err;
+};
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
 async function api(action, params = {}, { timeout = 30000 } = {}) {
   if (!S.cfg.url) throw new Error('Not set up yet');
-  const attempts = READ_ACTIONS.has(action) ? 3 : 1;
+  const isRead = READ_ACTIONS.has(action);
+  const attempts = isRead ? 3 : 1;
 
   for (let i = 0; i < attempts; i++) {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeout);
+    let j;
     try {
       const res = await fetch(S.cfg.url, {
         method: 'POST',
@@ -83,40 +92,50 @@ async function api(action, params = {}, { timeout = 30000 } = {}) {
         signal: ctrl.signal,
         redirect: 'follow',
       });
-      const j = await res.json();
-      if (!j.ok) throw new Error(j.error || 'Request failed');
-      if (action !== 'ping' && j.data && j.data.pong) {           // reply went missing
-        if (i < attempts - 1) { await new Promise((r) => setTimeout(r, 700)); continue; }
-        break;
-      }
-      return j.data;
+      j = await res.json();
+    } catch (e) {
+      // No usable reply. A write may still have run — the script can sit on its
+      // lock for 20 s, and a cold start adds more, so our timeout can fire after
+      // the cell is already written. That is a lost reply, not "offline".
+      if (!isRead) throw lostError();
+      if (e.name !== 'AbortError' && i < attempts - 1) { await pause(700); continue; }
+      throw e;
     } finally { clearTimeout(t); }
+    if (!j.ok) throw new Error(j.error || 'Request failed');
+    if (action !== 'ping' && j.data && j.data.pong) {           // reply went missing
+      if (i < attempts - 1) { await pause(700); continue; }
+      break;
+    }
+    return j.data;
   }
-  const err = new Error('Google dropped the reply — re-reading the sheet');
-  err.lost = true;
-  throw err;
+  throw lostError();
 }
 
-/* offline outbox: failed writes are queued and retried */
+/* offline outbox. It holds only writes that never left the phone, so sending
+   one later can't double-count. Anything that was sent but not confirmed is
+   surfaced to the owner instead of being re-sent. */
+const isOffline = () => navigator.onLine === false;
 function queueWrite(action, params, label) {
   S.outbox.push({ id: Date.now() + Math.random(), action, params, label, at: new Date().toISOString() });
   store.set('outbox', S.outbox);
 }
 async function flushOutbox() {
-  if (!S.outbox.length || S.syncing) return;
+  if (!S.outbox.length || S.syncing || isOffline()) return;
   S.syncing = true;
-  const remaining = [];
-  for (const item of S.outbox) {
+  const batch = S.outbox.slice(), remaining = [], unsure = [];
+  for (const item of batch) {
+    if (isOffline()) { remaining.push(item); continue; }  // went offline mid-flush: nothing sent
     try { await api(item.action, item.params); }
     catch (e) {
-      // never re-queue a lost reply: the write may already have applied
-      if (e.lost || /token|formula|Bad|moved/i.test(String(e.message))) {
-        if (!e.lost) toast('Dropped: ' + item.label, true);
-      } else remaining.push(item);
+      // sent, but no clean success: it may have applied, so it is never re-sent
+      unsure.push(item.label + (e.lost ? '' : ' (' + e.message + ')'));
     }
   }
-  S.outbox = remaining; store.set('outbox', S.outbox); S.syncing = false;
-  if (!remaining.length) refresh(true);
+  // keep anything queued while this flush was running
+  S.outbox = remaining.concat(S.outbox.filter((i) => !batch.includes(i)));
+  store.set('outbox', S.outbox); S.syncing = false;
+  if (unsure.length) toast('Couldn’t confirm: ' + unsure.join(', ') + ' — check the sheet before re-entering', true);
+  refresh(true);
   renderIfCurrent();
 }
 addEventListener('online', flushOutbox);
@@ -126,21 +145,24 @@ const fyKey = () => S.cfg.fyId + (S.cfg.fyTab ? '#' + S.cfg.fyTab : '');
 function cachedModel() { return store.get('model.' + fyKey()); }
 
 async function refresh(silent = false) {
-  if (!S.cfg.url || !S.cfg.fyId) return;
+  if (!S.cfg.url || !S.cfg.fyId) return false;
   if (!silent) { S.loading = true; renderIfCurrent(); }
+  let ok = false;
   try {
     const [model, log] = await Promise.all([
-      api('get', { fyId: S.cfg.fyId, tab: S.cfg.fyTab, tab: S.cfg.fyTab }),
-      api('log', { fyId: S.cfg.fyId, tab: S.cfg.fyTab, tab: S.cfg.fyTab, limit: 12 }).catch(() => ({ entries: S.logs })),
+      api('get', { fyId: S.cfg.fyId, tab: S.cfg.fyTab }),
+      api('log', { fyId: S.cfg.fyId, tab: S.cfg.fyTab, limit: 12 }).catch(() => ({ entries: S.logs })),
     ]);
     S.model = model; S.logs = log.entries || [];
     store.set('model.' + fyKey(), model);
     store.set('logs', S.logs);
+    ok = true;
   } catch (e) {
     if (!silent) toast(e.name === 'AbortError' ? 'Timed out — check connection' : e.message, true);
   }
   S.loading = false;
   renderIfCurrent();
+  return ok;
 }
 
 async function loadFYs() {
@@ -178,7 +200,7 @@ const M = {
   rowSpent: (r) => r.cells.reduce((a, c) => a + (c.v || 0), 0),
 };
 
-const BUILD = '2026-09-11.10';
+const BUILD = '2026-10-01.1';
 
 /* ─── UI primitives: toast + bottom sheet ──────────────────────────────── */
 let toastT;
@@ -760,33 +782,47 @@ function fyPickerSheet() {
 
 /* ─── write helpers ────────────────────────────────────────────────────── */
 
-/* amount writes: optimistic, queued to the outbox if the network fails */
+/* A write was sent but not cleanly confirmed — it may or may not be in the
+   sheet. Show the sheet's real state and tell the owner; never re-send. */
+async function unconfirmed(what) {
+  toast('Checking the sheet…');
+  const reread = await refresh(true);
+  toast(reread
+    ? `Couldn’t confirm ${what} — showing the sheet now. Check it before re-entering.`
+    : `Couldn’t confirm ${what} and can’t reach the sheet. Check it before re-entering.`, true);
+}
+
+/* amount writes: optimistic. Queued to the outbox only when the phone is
+   offline before sending — once sent, a write is never sent again. */
 async function submitWrite(action, params, label, optimistic, extra) {
   closeSheet();
   optimistic?.();
+  if (isOffline()) {
+    queueWrite(action, params, label);
+    toast('Offline — queued, will sync later');
+    return renderIfCurrent();
+  }
   renderIfCurrent();
   toast('Saving…');
   try {
     await api(action, params);
-    await extra?.();
-    toast('Saved ✓');
-    refresh(true);
   } catch (e) {
-    if (e.lost) {                       // it most likely landed; show what the sheet says
-      toast('Checking the sheet…'); refresh();
-    } else if (/token|formula|Bad|Unknown|required|section|moved/i.test(String(e.message))) {
-      toast(e.message, true); refresh(true);
-    } else {
-      queueWrite(action, params, label);
-      toast('Offline — queued, will sync later');
-      renderIfCurrent();
+    if (e.lost) return unconfirmed(`“${label}”`);
+    // the script refused before touching the cell
+    if (/token|formula|Bad|Unknown|required|section|moved/i.test(String(e.message))) {
+      toast(e.message, true); return refresh(true);
     }
+    return unconfirmed(`“${label}” (${e.message})`);
   }
+  await extra?.();
+  toast('Saved ✓');
+  refresh(true);
 }
 
 /* structural writes: never queued — row numbers would go stale.
    The script returns the rebuilt model so the app re-syncs immediately. */
 async function structuralWrite(action, params, okMsg) {
+  if (isOffline()) return toast('You’re offline — nothing was changed', true);
   toast('Saving…');
   try {
     const model = await api(action, { fyId: S.cfg.fyId, tab: S.cfg.fyTab, ...params });
@@ -795,8 +831,8 @@ async function structuralWrite(action, params, okMsg) {
     toast(okMsg);
     renderIfCurrent();
   } catch (e) {
-    if (e.lost) { toast('Checking the sheet…'); return refresh(); }
-    toast(e.name === 'AbortError' ? 'Timed out — nothing was changed' : e.message, true);
+    if (e.lost) return unconfirmed(`the change to “${params.was || params.label}”`);
+    toast(e.message, true);
   }
 }
 

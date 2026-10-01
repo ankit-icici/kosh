@@ -58,6 +58,13 @@ answer — even though the write already ran**. Observed twice in live testing.
 retry up to 3×; everything else throws `err.lost`, and the caller **re-reads the
 sheet** instead of re-sending. Retrying a write double-counts someone's money.
 
+A timeout, dropped connection or unparseable reply on a write is the same case:
+the script can hold its lock for 20 s and cold-start on top, so the client can
+give up *after* the cell was written. The offline outbox therefore holds only
+writes made while `navigator.onLine` was false — they never left the phone.
+Anything sent but not cleanly confirmed is reported ("Couldn't confirm …") and
+the sheet re-read; it is never queued or re-sent, including during a flush.
+
 Same trap from the shell — `-X POST` forces the method across the redirect and
 returns a misleading 405:
 
