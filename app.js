@@ -200,7 +200,7 @@ const M = {
   rowSpent: (r) => r.cells.reduce((a, c) => a + (c.v || 0), 0),
 };
 
-const BUILD = '2026-10-01.1';
+const BUILD = '2026-10-01.2';
 
 /* ─── UI primitives: toast + bottom sheet ──────────────────────────────── */
 let toastT;
@@ -684,19 +684,21 @@ function editCellSheet(row, month, isLarge) {
     $('#ec-amt', sh).focus();
     $('#ec-go', sh).onclick = () => {
       const amount = parseFloat($('#ec-amt', sh).value);
-      if (isNaN(amount)) return toast('Enter an amount', true);
       const noteNew = isLarge ? $('#ec-note', sh).value.trim() : '';
-      const action = isLarge ? 'addLarge' : 'addVariable';
       const noteChanged = isLarge && noteNew !== (note || '');
-      const doWrite = async () => {
-        if (noteChanged) await api('setNote', { fyId: S.cfg.fyId, tab: S.cfg.fyTab, row, label: r.label, month, note: noteNew }).catch(() => {});
-      };
-      submitWrite(action, { fyId: S.cfg.fyId, tab: S.cfg.fyTab, row, label: r.label, month, amount, mode, note: '' },
+      if (isNaN(amount) && !noteChanged) return toast('Enter an amount', true);
+      const action = isLarge ? 'addLarge' : 'addVariable';
+      const base = { fyId: S.cfg.fyId, tab: S.cfg.fyTab, row, label: r.label, month };
+      const noteWrite = { action: 'setNote', params: { ...base, note: noteNew }, label: `note on ${r.label}` };
+      // only the note changed: leave the amount cell alone rather than writing +0
+      if (isNaN(amount)) return submitWrite(noteWrite.action, noteWrite.params, noteWrite.label,
+        () => { r.cells[month].note = noteNew; });
+      submitWrite(action, { ...base, amount, mode, note: '' },
         `${r.label} ${mode === 'set' ? '=' : '+'}${fmtS(amount)}`, () => {
           const next = mode === 'set' ? amount : cur + amount;
           if (isLarge) { r.cells[month].v = next; if (noteChanged) r.cells[month].note = noteNew; }
           else r.cells[month] = next;
-        }, doWrite);
+        }, noteChanged ? [noteWrite] : []);
     };
   });
 }
@@ -784,38 +786,47 @@ function fyPickerSheet() {
 
 /* A write was sent but not cleanly confirmed — it may or may not be in the
    sheet. Show the sheet's real state and tell the owner; never re-send. */
-async function unconfirmed(what) {
+async function unconfirmed(what, tail = '') {
   toast('Checking the sheet…');
   const reread = await refresh(true);
-  toast(reread
+  toast((reread
     ? `Couldn’t confirm ${what} — showing the sheet now. Check it before re-entering.`
-    : `Couldn’t confirm ${what} and can’t reach the sheet. Check it before re-entering.`, true);
+    : `Couldn’t confirm ${what} and can’t reach the sheet. Check it before re-entering.`) + tail, true);
 }
 
 /* amount writes: optimistic. Queued to the outbox only when the phone is
-   offline before sending — once sent, a write is never sent again. */
-async function submitWrite(action, params, label, optimistic, extra) {
+   offline before sending — once sent, a write is never sent again.
+   `follow` are writes that belong with this one (a cell's note). They go into
+   the outbox alongside it, and online are sent only once it is confirmed. */
+async function submitWrite(action, params, label, optimistic, follow = []) {
   closeSheet();
   optimistic?.();
   if (isOffline()) {
     queueWrite(action, params, label);
+    follow.forEach((f) => queueWrite(f.action, f.params, f.label));
     toast('Offline — queued, will sync later');
     return renderIfCurrent();
   }
   renderIfCurrent();
   toast('Saving…');
+  const tail = follow.length ? ' The note wasn’t saved.' : '';
   try {
     await api(action, params);
   } catch (e) {
-    if (e.lost) return unconfirmed(`“${label}”`);
+    if (e.lost) return unconfirmed(`“${label}”`, tail);
     // the script refused before touching the cell
     if (/token|formula|Bad|Unknown|required|section|moved/i.test(String(e.message))) {
-      toast(e.message, true); return refresh(true);
+      toast(tail ? e.message.replace(/[.\s]*$/, '.') + tail : e.message, true); return refresh(true);
     }
-    return unconfirmed(`“${label}” (${e.message})`);
+    return unconfirmed(`“${label}” (${e.message})`, tail);
   }
-  await extra?.();
-  toast('Saved ✓');
+  const failed = [];
+  for (const f of follow) {
+    try { await api(f.action, f.params); } catch { failed.push(f.label); }
+  }
+  toast(failed.length
+    ? `Saved “${label}”, but couldn’t confirm the ${failed.join(', ')} — open the cell and check it`
+    : 'Saved ✓', failed.length > 0);
   refresh(true);
 }
 
