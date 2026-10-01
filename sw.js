@@ -1,14 +1,18 @@
 /* Kosh service worker — caches the app shell so the app opens instantly.
    Data always comes from the network (Apps Script); cached model lives in
    localStorage inside the app itself. Bump VERSION on every deploy. */
-const VERSION = 'kosh-v16';
+const VERSION = 'kosh-v17';
 const SHELL = [
   './', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png'
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // cache:'reload' — GitHub Pages sends max-age=600, so a plain fetch could fill
+  // the new version's cache with the previous build's files
+  e.waitUntil(caches.open(VERSION)
+    .then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
@@ -25,9 +29,11 @@ self.addEventListener('fetch', (e) => {
 
   // Same-origin app shell: NETWORK-FIRST, so a fresh deploy shows up on the very
   // next open instead of after two. Cache is the offline fallback, not the source.
+  // cache:'no-cache' revalidates with the server (a cheap 304) instead of trusting
+  // the HTTP cache, which GitHub Pages lets hold a file for 10 minutes.
   if (url.origin === location.origin) {
     e.respondWith(
-      fetch(e.request)
+      fetch(e.request, { cache: 'no-cache' })
         .then((res) => {
           const copy = res.clone();
           caches.open(VERSION).then((c) => c.put(e.request, copy));

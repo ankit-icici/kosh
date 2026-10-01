@@ -153,6 +153,16 @@ open and looked like features hadn't shipped. Settings shows the app build, the
 deployed script version and the active FY tab; check there first when something
 looks missing.
 
+Network-first alone wasn't enough. GitHub Pages sends `max-age=600`, so the
+worker's `fetch()` was answered from the HTTP cache for up to 10 minutes; it now
+uses `cache: 'no-cache'` (a cheap revalidation) and installs with `cache: 'reload'`.
+And a home-screen app is *resumed*, not reopened, so it never re-checked: the app
+now calls `reg.update()` on `visibilitychange → visible`, and on `controllerchange`
+reloads into the new build — deferred while a sheet is open or `S.inflight > 0`,
+so an update can't eat a half-typed amount or a write's reply. (The old
+once-per-session `sessionStorage` guard meant a second deploy never arrived; the
+owner sat on build .4 through two releases.)
+
 ### 9. Never commit the token.
 
 `Code.gs` in the repo carries the `CHANGE_ME_to_a_long_random_secret`

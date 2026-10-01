@@ -43,6 +43,7 @@ const S = {
   outbox: store.get('outbox', []),
   loading: false,
   syncing: false,
+  inflight: 0,          // requests on the wire; an update never reloads under one
   scriptVersion: null,
 };
 
@@ -79,7 +80,11 @@ async function api(action, params = {}, { timeout = 30000 } = {}) {
   if (!S.cfg.url) throw new Error('Not set up yet');
   const isRead = READ_ACTIONS.has(action);
   const attempts = isRead ? 3 : 1;
-
+  S.inflight++;
+  try { return await send(action, params, timeout, isRead, attempts); }
+  finally { S.inflight--; }
+}
+async function send(action, params, timeout, isRead, attempts) {
   for (let i = 0; i < attempts; i++) {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeout);
@@ -224,7 +229,7 @@ const M = {
   rowSpent: (r) => r.cells.reduce((a, c) => a + (c.v || 0), 0),
 };
 
-const BUILD = '2026-10-01.6';
+const BUILD = '2026-10-01.7';
 
 /* ─── UI primitives: toast + bottom sheet ──────────────────────────────── */
 let toastT;
@@ -1038,18 +1043,27 @@ function bindView(name, arg) {
 
 /* ─── boot ─────────────────────────────────────────────────────────────── */
 applyTheme();
+/* Updates. A home-screen app is resumed, not reopened, so it only learns of a
+   new build if it asks: check whenever it comes back to the foreground. When a
+   new service worker takes over, reload into the new build — but never under an
+   open form or a request on the wire, where a reload would lose input or a reply.
+   (The old once-per-session sessionStorage guard meant the second deploy of a
+   session never arrived.) */
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('sw.js').then((reg) => {
-    // a new build installed behind us — reload once so the user never sits on stale code
-    reg.addEventListener('updatefound', () => {
-      const sw = reg.installing;
-      sw && sw.addEventListener('statechange', () => {
-        if (sw.state === 'installed' && navigator.serviceWorker.controller
-            && !sessionStorage.getItem('kh.reloaded')) {
-          try { sessionStorage.setItem('kh.reloaded', '1'); } catch {}
-          location.reload();
-        }
-      });
+  let controlled = !!navigator.serviceWorker.controller;   // first install: nothing stale to replace
+  let reloading = false;
+  const reloadWhenIdle = () => {
+    if (reloading) return;
+    if (sheetOpen || S.inflight) return setTimeout(reloadWhenIdle, 1500);
+    reloading = true; location.reload();
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (controlled) reloadWhenIdle();
+    controlled = true;
+  });
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') reg.update().catch(() => {});
     });
   }).catch(() => {});
 }
