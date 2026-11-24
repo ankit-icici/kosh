@@ -242,3 +242,29 @@ code.k{background:var(--card2);border:1px solid var(--line);padding:2px 7px;bord
 .plan:active{opacity:.6}
 .matrix td.plancell{color:var(--acc-ink);font-weight:800;background:var(--acc-soft)}
 .stat.wide{grid-column:1/-1}
+
+/* ─── PIN lock ─── */
+body.locked #view{padding-bottom:calc(env(safe-area-inset-bottom) + 18px);display:flex;flex-direction:column}
+.lock{flex:1;display:flex;flex-direction:column;justify-content:center;max-width:340px;width:100%;margin:0 auto}
+.lock .hdr{margin-bottom:auto}
+.lock .hdr + .lock-title{margin-top:0}
+.lock-logo{width:64px;height:64px;border-radius:18px;margin:0 auto 12px}
+.lock-name{font-size:24px;letter-spacing:-.02em}
+.lock-title{font-size:16px;font-weight:700;color:var(--ink2);margin:14px 0 18px}
+.pin-dots{display:flex;justify-content:center;gap:18px;height:16px}
+.pin-dots i{width:14px;height:14px;border-radius:50%;border:2px solid var(--line2);transition:background .15s,border-color .15s,transform .15s}
+.pin-dots i.on{background:var(--acc);border-color:var(--acc);transform:scale(1.08)}
+.pin-dots.busy i{animation:pinpulse .9s ease-in-out infinite}
+.pin-dots.busy i:nth-child(2){animation-delay:.12s}.pin-dots.busy i:nth-child(3){animation-delay:.24s}.pin-dots.busy i:nth-child(4){animation-delay:.36s}
+@keyframes pinpulse{50%{opacity:.35}}
+.pin-dots.shake{animation:pinshake .4s}
+@keyframes pinshake{20%,60%{transform:translateX(-8px)}40%,80%{transform:translateX(8px)}}
+.lock-msg{min-height:38px;margin:14px 8px 10px;line-height:1.35;font-weight:600}
+.lock-msg.bad{color:var(--bad)}
+.keypad{display:grid;grid-template-columns:repeat(3,72px);justify-content:center;column-gap:26px;row-gap:14px}
+.keypad .key{width:72px;height:72px;border-radius:50%;background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow);
+  font:inherit;font-size:27px;font-weight:600;color:var(--ink);transition:transform .08s,background .15s}
+.keypad .key:active{transform:scale(.93);background:var(--acc-soft)}
+.keypad .key.fn{background:transparent;border-color:transparent;box-shadow:none;font-size:22px;color:var(--ink2)}
+.lock-foot{min-height:20px;margin-top:16px}
+.lock .hdr ~ .lock-foot{margin-bottom:auto}

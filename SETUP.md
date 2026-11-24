@@ -5,21 +5,23 @@
 1. Sign in to the Google account that owns your FY sheet, open **script.google.com**.
 2. **New project** → delete the placeholder → paste all of
    [`apps-script/Code.gs`](apps-script/Code.gs).
-3. Change `SHARED_TOKEN` near the top to your own long random secret. Treat it
-   like a password; don't commit it anywhere.
+3. Change `SHARED_TOKEN` near the top to your own long random secret (used only
+   for testing from a terminal). Treat it like a password; don't commit it.
 4. **Deploy → New deployment** → gear → **Web app**:
    - Execute as: **Me**
    - Who has access: **Anyone**
 5. **Deploy** → authorise (*Advanced → Go to … (unsafe) → Allow* — it's your own
    unreviewed script) → copy the **Web app URL**, ending in `/exec`.
 
-> "Anyone" means anyone *with the URL and your token*. The URL contains a
-> ~70-character random id, and every request is rejected without the token.
+> "Anyone" means anyone *with the URL and your PIN*. Every request is rejected
+> without it, and the script stops accepting guesses after 10 wrong ones.
 > Your sheet stays private.
 
 ## 2 · Connect the app
 
-Open **https://ankit-icici.github.io/kosh/**, paste the URL and token, Connect.
+Put the Web app URL in `SCRIPT_URL` at the top of `app.js` and deploy. Open
+**https://ankit-icici.github.io/kosh/** and choose a 4-digit PIN; the app asks
+for it every time it opens. Forgot it: run `resetPin()` in the script editor.
 
 ## 3 · Install to the home screen
 

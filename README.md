@@ -24,10 +24,10 @@ phone.
 | Frontend | `index.html`, `app.js`, `styles.css`, `sw.js`, `manifest.webmanifest` | Plain JS, no build step, no dependencies |
 | Backend | `apps-script/Code.gs` | Deployed as a web app from the sheet owner's Google account |
 | Icons | `icons/`, `tools/make-icons.py` | Regenerate all four sizes with `python3 tools/make-icons.py` |
-| Auth | shared token | Set in `Code.gs`; entered once in the app. **Never committed.** |
+| Auth | 4-digit PIN | Asked every time the app opens (and after a minute away). Checked by the script against a salted hash in Script Properties; wrong guesses are capped. The script URL is built into `app.js`. |
 
-The app keeps no data of its own. `localStorage` holds only the connection
-config and a cached copy of the last-read sheet (for instant open and offline),
+The app keeps no data of its own. `localStorage` holds only settings, a salted
+hash of the last PIN that worked (so the app opens offline) and a cached copy of the last-read sheet (for instant open and offline),
 plus a queue of writes that failed while offline.
 
 ## Screens

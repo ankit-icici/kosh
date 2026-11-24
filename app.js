@@ -49,6 +49,15 @@ const S = {
 
 function saveCfg() { store.set('cfg', S.cfg); }
 
+/* The Apps Script web app this app talks to. Built in, so a phone never has to
+   be "set up": the 4-digit PIN (checked by the script, see checkAccess in
+   Code.gs) is the only thing asked for. The URL is not a secret — the PIN is,
+   and the script caps wrong guesses. */
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyM9PqCP9efpXJwdsqqlOTroxz2BdhgOBIpuHsx0m1XhSQfn7BSOI1zpozT-5vDHxEQqA/exec';
+S.cfg.url = SCRIPT_URL;
+delete S.cfg.token;        // older builds stored the long token; the PIN replaces it
+saveCfg();
+
 /* ─── theme ────────────────────────────────────────────────────────────── */
 function applyTheme() {
   const sys = matchMedia('(prefers-color-scheme: dark)').matches;
@@ -77,7 +86,7 @@ const lostError = () => {
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function api(action, params = {}, { timeout = 30000 } = {}) {
-  if (!S.cfg.url) throw new Error('Not set up yet');
+  if (!S.pin && action !== 'setPin') throw new Error('Locked');
   const isRead = READ_ACTIONS.has(action);
   const attempts = isRead ? 3 : 1;
   S.inflight++;
@@ -93,7 +102,7 @@ async function send(action, params, timeout, isRead, attempts) {
       const res = await fetch(S.cfg.url, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },  // simple request → no CORS preflight
-        body: JSON.stringify({ token: S.cfg.token, action, ...params }),
+        body: JSON.stringify({ pin: S.pin, action, ...params }),
         signal: ctrl.signal,
         redirect: 'follow',
       });
@@ -106,7 +115,14 @@ async function send(action, params, timeout, isRead, attempts) {
       if (e.name !== 'AbortError' && i < attempts - 1) { await pause(700); continue; }
       throw e;
     } finally { clearTimeout(t); }
-    if (!j.ok) throw new Error(j.error || 'Request failed');
+    if (!j.ok) {
+      const err = new Error(j.error || 'Request failed');
+      if (j.code) {           // the PIN was refused: back to the lock screen
+        Object.assign(err, { code: j.code, left: j.left, until: j.until });
+        if (S.pin && !PIN.busy) lockApp(pinMessage(err));
+      }
+      throw err;
+    }
     if (action !== 'ping' && j.data && j.data.pong) {           // reply went missing
       if (i < attempts - 1) { await pause(700); continue; }
       break;
@@ -125,7 +141,7 @@ function queueWrite(action, params, label) {
   store.set('outbox', S.outbox);
 }
 async function flushOutbox() {
-  if (!S.outbox.length || S.syncing || isOffline()) return;
+  if (!S.pin || !S.outbox.length || S.syncing || isOffline()) return;   // locked: wait for the PIN
   S.syncing = true;
   const batch = S.outbox.slice(), remaining = [], unsure = [];
   let synced = 0;
@@ -153,7 +169,7 @@ const fyKey = () => S.cfg.fyId + (S.cfg.fyTab ? '#' + S.cfg.fyTab : '');
 function cachedModel() { return store.get('model.' + fyKey()); }
 
 async function refresh(silent = false) {
-  if (!S.cfg.url || !S.cfg.fyId) return false;
+  if (!S.pin || !S.cfg.fyId) return false;
   if (!silent) { S.loading = true; renderIfCurrent(); }
   let ok = false;
   try {
@@ -229,7 +245,7 @@ const M = {
   rowSpent: (r) => r.cells.reduce((a, c) => a + (c.v || 0), 0),
 };
 
-const BUILD = '2026-10-01.7';
+const BUILD = '2026-11-24.1';
 
 /* ─── UI primitives: toast + bottom sheet ──────────────────────────────── */
 let toastT;
@@ -276,10 +292,12 @@ const routes = {};
 function route() {
   const hash = location.hash || '#/';
   const [path, arg] = hash.replace(/^#\//, '').split('/');
-  const name = !S.cfg.url ? 'setup' : (path || 'home');
+  const name = !S.pin ? 'lock' : (path || 'home');
   const view = routes[name] || routes.home;
+  if (name !== 'lock' && name !== 'changepin' && PIN.mode.startsWith('change')) PIN.mode = 'enter';
+  document.body.classList.toggle('locked', name === 'lock' || name === 'changepin');
   const tab = { home: 'home', months: 'months', large: 'large', year: 'year' }[name];
-  $('#tabbar').hidden = !S.cfg.url || name === 'setup';
+  $('#tabbar').hidden = name === 'lock' || name === 'changepin';
   $$('#tabbar a').forEach((a) => a.classList.toggle('on', a.dataset.tab === tab));
   const el = $('#view');
   el.innerHTML = view(arg);
@@ -304,40 +322,194 @@ function manageBtn(section, label = 'Manage categories') {
   return `<a class="btn ghost sm" href="#/manage/${section}">⚙&nbsp; ${label}</a>`;
 }
 
-/* ─── view: setup / onboarding ─────────────────────────────────────────── */
-routes.setup = () => `
-  <img src="icons/icon-192.png" class="onboard-logo" alt="">
-  <h1 class="center" style="font-size:26px;letter-spacing:-.02em">Kosh</h1>
-  <p class="center mut small" style="margin:6px 0 26px">Your expense sheet, on your phone.<br>Data lives only in your Google Sheet.</p>
-  <div class="card">
-    <div class="field"><label>Apps Script web app URL</label>
-      <input id="su-url" inputmode="url" placeholder="https://script.google.com/macros/s/…/exec" value="${esc(S.cfg.url)}"></div>
-    <div class="field"><label>Secret token</label>
-      <input id="su-token" placeholder="same token as in Code.gs" value="${esc(S.cfg.token)}"></div>
-    <button class="btn" id="su-go">Connect</button>
-    <div class="gap"></div>
-    <p class="small mut">One-time setup — see <code class="k">SETUP.md</code> in the repo for the 5-minute guide to deploying the script from your Google account.</p>
-  </div>`;
+/* ─── PIN lock ─────────────────────────────────────────────────────────── */
+/* The app opens locked, and locks again after a minute in the background.
+   The PIN lives only in memory (and, for a minute, in sessionStorage so an
+   update reload doesn't ask again). The script checks it on every request; a
+   salted hash of the last PIN that worked lets the app open offline. */
+const RELOCK_MS = 60 * 1000;
+const PIN = { mode: 'enter', first: '', digits: '', busy: false, msg: '', err: false };
 
-function bindSetup() {
-  $('#su-go').onclick = async () => {
-    const url = $('#su-url').value.trim(), token = $('#su-token').value.trim();
-    if (!url.startsWith('https://script.google.com/')) return toast('That doesn’t look like an Apps Script URL', true);
-    if (!token) return toast('Token is required', true);
-    const btn = $('#su-go'); btn.disabled = true; btn.textContent = 'Connecting…';
-    S.cfg.url = url; S.cfg.token = token; saveCfg();
-    try {
-      await api('ping');
-      toast('Connected ✓');
-      await loadFYs();
-      location.hash = '#/'; refresh();
-    } catch (e) {
-      S.cfg.url = ''; saveCfg();
-      toast(e.message === 'Invalid token' ? 'Token doesn’t match Code.gs' : 'Could not connect: ' + e.message, true);
-      btn.disabled = false; btn.textContent = 'Connect';
+function pinMessage(e) {
+  if (e.code === 'WRONG') return `Wrong PIN · ${e.left} ${e.left === 1 ? 'try' : 'tries'} left before a 15-minute wait`;
+  if (e.code === 'WAIT') return 'Too many wrong tries. Try again after ' +
+    new Date(e.until).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+  if (e.code === 'LOCKED') return 'Locked for safety after 10 wrong tries. Ask Claude to unlock it.';
+  if (e.code === 'NO_PIN') return '';
+  return e.message;
+}
+function lockApp(msg = '') {
+  S.pin = null;
+  try { sessionStorage.removeItem('kh.pin'); } catch {}
+  if (sheetOpen) closeSheet();
+  Object.assign(PIN, { mode: 'enter', first: '', digits: '', busy: false, msg, err: !!msg });
+  location.hash = '#/';
+  route();
+}
+function keepPin() {              // remembered for RELOCK_MS only (update reloads)
+  try { if (S.pin) sessionStorage.setItem('kh.pin', JSON.stringify({ pin: S.pin, at: Date.now() })); } catch {}
+}
+function restorePin() {
+  try {
+    const v = JSON.parse(sessionStorage.getItem('kh.pin') || 'null');
+    if (v && Date.now() - v.at < RELOCK_MS) S.pin = v.pin;
+  } catch {}
+}
+async function pinVerifier(pin, salt) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(salt + ':' + pin));
+  return btoa(String.fromCharCode(...new Uint8Array(buf)));
+}
+async function rememberPin(pin) {
+  try {
+    const salt = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    store.set('pinv', { salt, hash: await pinVerifier(pin, salt) });
+  } catch {}
+}
+async function pinMatchesLocal(pin) {
+  const v = store.get('pinv');
+  try { return !!v && (await pinVerifier(pin, v.salt)) === v.hash; } catch { return false; }
+}
+
+const pinTitle = () => ({
+  enter: 'Enter your PIN',
+  create: 'Choose a 4-digit PIN',
+  confirm: 'Enter it once more',
+  change: 'Choose a new PIN',
+  'change-confirm': 'Enter the new PIN again',
+}[PIN.mode]);
+
+function pinPad(withBack) {
+  const keys = ['1','2','3','4','5','6','7','8','9','','0','del'];
+  return `
+  <div class="lock">
+  ${withBack ? `<div class="hdr">${backBtn}<h1>Change PIN</h1></div>` : `
+  <img src="icons/icon-192.png" class="onboard-logo lock-logo" alt="">
+  <h1 class="center lock-name">Kosh</h1>`}
+  <p class="center lock-title">${esc(pinTitle())}</p>
+  <div class="pin-dots ${PIN.busy ? 'busy' : ''}" aria-label="${PIN.digits.length} of 4 digits entered">
+    ${[0,1,2,3].map((i) => `<i class="${i < PIN.digits.length ? 'on' : ''}"></i>`).join('')}</div>
+  <p class="center small lock-msg ${PIN.err ? 'bad' : 'mut'}" role="status">${esc(PIN.msg) || '&nbsp;'}</p>
+  <div class="keypad">
+    ${keys.map((k) => k === '' ? '<span></span>'
+      : k === 'del' ? `<button class="key fn" data-key="del" aria-label="Delete">⌫</button>`
+      : `<button class="key" data-key="${k}">${k}</button>`).join('')}
+  </div>
+  <p class="center small mut lock-foot">${PIN.mode === 'create' ? 'You’ll enter this PIN each time you open Kosh.' : '&nbsp;'}</p>
+  </div>`;
+}
+routes.lock = () => pinPad(false);
+routes.changepin = () => {
+  if (!['change', 'change-confirm'].includes(PIN.mode))
+    Object.assign(PIN, { mode: 'change', first: '', digits: '', msg: '', err: false });
+  return pinPad(true);
+};
+
+function renderPin() {
+  if (!$('.keypad')) return;
+  $('#view').innerHTML = pinPad(S.pin && location.hash === '#/changepin');
+}
+function pinKey(k) {
+  if (PIN.busy) return;
+  if (k === 'del') PIN.digits = PIN.digits.slice(0, -1);
+  else if (/^\d$/.test(k) && PIN.digits.length < 4) PIN.digits += k;
+  else return;
+  if (PIN.digits.length === 1) { PIN.msg = ''; PIN.err = false; }
+  renderPin();
+  if (PIN.digits.length === 4) setTimeout(pinComplete, 120);   // let the 4th dot show
+}
+function pinFail(msg) {
+  Object.assign(PIN, { digits: '', busy: false, msg, err: true });
+  renderPin();
+  $('.pin-dots')?.classList.add('shake');
+  navigator.vibrate?.(120);
+}
+async function pinComplete() {
+  const pin = PIN.digits;
+  if (PIN.mode === 'create' || PIN.mode === 'change') {
+    Object.assign(PIN, { first: pin, digits: '', mode: PIN.mode === 'create' ? 'confirm' : 'change-confirm', msg: '', err: false });
+    return renderPin();
+  }
+  if (PIN.mode === 'confirm' || PIN.mode === 'change-confirm') {
+    const changing = PIN.mode === 'change-confirm';
+    if (pin !== PIN.first) {
+      PIN.mode = changing ? 'change' : 'create';
+      return pinFail('Those didn’t match — choose it again');
     }
+    PIN.busy = true; renderPin();
+    try {
+      await api('setPin', { newPin: pin });
+      await rememberPin(pin);
+      if (changing) { S.pin = pin; keepPin(); Object.assign(PIN, { mode: 'enter', first: '', digits: '', busy: false }); toast('PIN changed ✓'); location.hash = '#/settings'; return; }
+      return unlocked(pin, 'PIN set ✓');
+    } catch (e) {
+      PIN.mode = changing ? 'change' : 'create';
+      return pinFail(e.code ? pinMessage(e) : 'Couldn’t save the PIN: ' + e.message);
+    }
+  }
+  // enter
+  PIN.busy = true; renderPin();
+  // Offline: open straight away with the PIN that last worked on this phone.
+  if (isOffline() && store.get('pinv')) {
+    if (await pinMatchesLocal(pin)) return unlocked(pin, 'Offline — showing saved figures');
+    return pinFail('Wrong PIN');
+  }
+  S.pin = pin;
+  try {
+    const d = await api('ping', {}, { timeout: 8000 });   // weak signal: fall back to this phone after 8 s
+    S.scriptVersion = d.version;
+    await rememberPin(pin);
+    return unlocked(pin);
+  } catch (e) {
+    S.pin = null;
+    if (e.code === 'NO_PIN') {
+      Object.assign(PIN, { mode: 'create', digits: '', busy: false, msg: '', err: false });
+      return renderPin();
+    }
+    if (e.code) return pinFail(pinMessage(e));
+    // no reply from Google: open with the PIN that last worked on this phone
+    if (await pinMatchesLocal(pin)) return unlocked(pin, 'Offline — showing saved figures');
+    return pinFail(store.get('pinv') ? 'Wrong PIN' : 'No connection — connect once to unlock');
+  }
+}
+function unlocked(pin, msg) {
+  S.pin = pin; keepPin();
+  Object.assign(PIN, { mode: 'enter', first: '', digits: '', busy: false, msg: '', err: false });
+  if (msg) toast(msg);
+  location.hash = '#/';
+  route();
+  startData();
+}
+/* Load the sheet once the PIN is in. */
+let dataStarted = false;
+function startData() {
+  if (dataStarted) return refresh(true);
+  dataStarted = true;
+  S.model = cachedModel();
+  route();
+  (S.fys.length && S.cfg.fyId ? Promise.resolve() : loadFYs())
+    .then(() => { refresh(!!S.model); flushOutbox(); });
+  if (!S.scriptVersion) api('ping').then((d) => { S.scriptVersion = d.version; }).catch(() => {});
+}
+
+function bindPin() {
+  $('#view').onclick = (e) => {
+    const k = e.target.closest('[data-key]');
+    if (k) pinKey(k.dataset.key);
   };
 }
+addEventListener('keydown', (e) => {
+  const name = $('.keypad') ? 'pin' : '';
+  if (!name || sheetOpen) return;
+  if (/^\d$/.test(e.key)) pinKey(e.key);
+  else if (e.key === 'Backspace') pinKey('del');
+});
+/* lock again after a minute away */
+let hiddenAt = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); keepPin(); }
+  else if (S.pin && hiddenAt && Date.now() - hiddenAt > RELOCK_MS) lockApp();
+});
+setInterval(() => { if (document.visibilityState === 'visible') keepPin(); }, 15000);
 
 /* ─── view: home — the four year-end figures, nothing else ─────────────── */
 routes.home = () => {
@@ -610,10 +782,11 @@ routes.manage = (section) => {
 routes.settings = () => `
   <div class="hdr">${backBtn}<h1>Settings</h1></div>
   <div class="card">
-    <h3>Connection</h3>
-    <div class="field"><label>Apps Script URL</label><input id="st-url" value="${esc(S.cfg.url)}"></div>
-    <div class="field"><label>Token</label><input id="st-token" value="${esc(S.cfg.token)}"></div>
-    <button class="btn sm ghost" data-act="testconn">Test & save</button>
+    <h3>Security</h3>
+    <a class="btn sm ghost" href="#/changepin">Change PIN</a>
+    <div class="gap"></div>
+    <button class="btn sm ghost" data-act="lock">Lock now</button>
+    <p class="small mut" style="margin-top:12px">Kosh asks for your PIN each time you open it, and again after a minute away.</p>
   </div>
   <div class="card">
     <h3>Appearance</h3>
@@ -958,7 +1131,7 @@ async function structuralWrite(action, params, okMsg) {
 
 /* ─── event binding per view ───────────────────────────────────────────── */
 function bindView(name, arg) {
-  if (name === 'setup') return bindSetup();
+  if (name === 'lock' || name === 'changepin') return bindPin();
 
   $('#view').onclick = (e) => {
     const cell = e.target.closest('[data-cell]');
@@ -1012,16 +1185,12 @@ function bindView(name, arg) {
       case 'sync': return flushOutbox();
       case 'hardrefresh': toast('Refreshing…'); return refresh();
       case 'refys': return loadFYs().then(() => { renderIfCurrent(); toast('FY list updated'); });
-      case 'testconn': {
-        S.cfg.url = $('#st-url').value.trim(); S.cfg.token = $('#st-token').value.trim(); saveCfg();
-        return api('ping').then((d) => { S.scriptVersion = d.version; toast('Connected ✓ · script ' + d.version); refresh(true); })
-                          .catch((err) => toast(err.message, true));
-      }
+      case 'lock': return lockApp();
       case 'reset': return confirmSheet({
         title: 'Sign out of this device?',
-        body: 'Clears the saved connection and cached figures here. Your Google Sheet is untouched.',
+        body: 'Clears the saved figures and settings on this phone. Your Google Sheet and your PIN are untouched.',
         danger: 'Sign out',
-        onYes: () => { localStorage.clear(); location.hash = '#/'; location.reload(); },
+        onYes: () => { localStorage.clear(); try { sessionStorage.clear(); } catch {} location.hash = '#/'; location.reload(); },
       });
     }
   };
@@ -1067,11 +1236,7 @@ if ('serviceWorker' in navigator) {
     });
   }).catch(() => {});
 }
-if (S.cfg.url && S.cfg.fyId) {
-  S.model = cachedModel();
-  refresh(!!S.model);
-  if (!S.fys.length) loadFYs();
-  api('ping').then((d) => { S.scriptVersion = d.version; }).catch(() => {});
-  flushOutbox();
-}
+restorePin();
+if (!S.pin) location.hash = '#/';
 route();
+if (S.pin) startData();

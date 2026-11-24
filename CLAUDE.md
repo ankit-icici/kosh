@@ -163,11 +163,26 @@ so an update can't eat a half-typed amount or a write's reply. (The old
 once-per-session `sessionStorage` guard meant a second deploy never arrived; the
 owner sat on build .4 through two releases.)
 
-### 9. Never commit the token.
+### 9. Never commit the token. The app uses a 4-digit PIN instead.
 
 `Code.gs` in the repo carries the `CHANGE_ME_to_a_long_random_secret`
-placeholder. The real value lives only in the deployed script and on the owner's
-phone.
+placeholder. The real value lives only in the deployed script; it is now used
+only for shell testing (the owner lost it once, which is why the PIN exists).
+
+Since build 2026-11-24.1 / script 1.6.0 the app has **no setup screen**: the
+script URL is `SCRIPT_URL` in `app.js`, and the app asks for a 4-digit PIN on
+every open and after a minute in the background (owner's choice, Nov 24, 2026).
+- `checkAccess()` in `Code.gs` checks the PIN against `PIN_HASH`/`PIN_SALT` in
+  Script Properties. Every 5 wrong tries in a row → 15-minute wait; 10 → locked
+  until `resetPinLock()` is run in the editor. That cap is the only thing making
+  a 4-digit PIN safe with a public URL: **never loosen it.**
+- No PIN set → the app asks the owner to choose one (`setPin` is the only
+  action allowed). Forgot the PIN → run `resetPin()` in the editor.
+- The PIN lives in memory, and for a minute in `sessionStorage` so an update
+  reload doesn't re-ask. `localStorage.pinv` is a salted hash of the last PIN
+  that worked, so the app opens **offline**; offline entries go to the outbox.
+- The service worker falls back to the saved app files after 3 s, so a weak
+  signal never stalls opening.
 
 ---
 

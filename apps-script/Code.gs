@@ -13,7 +13,8 @@
  *  3. Deploy → New deployment → type "Web app"
  *       - Execute as: Me
  *       - Who has access: Anyone
- *  4. Copy the Web app URL into the app's setup screen along with your token.
+ *  4. Put the Web app URL in SCRIPT_URL at the top of app.js. The app then
+ *     asks you to choose a 4-digit PIN on first open (see checkAccess).
  *
  * Sheet layout expectations (label-anchored, so row numbers may drift):
  *  - "Funds" section: income rows until a row labelled "Total"
@@ -34,7 +35,7 @@ var KNOWN_FYS = {
   'FY27': '16Vi-MFXjRknsbupGWVo5cueU_2i93LPST34Jhyo-NLo'
 };
 
-var VERSION = '1.5.0';
+var VERSION = '1.6.0';
 var MONTH_COL_START = 4;   // column D
 var MONTH_COUNT = 12;      // D..O = Apr..Mar
 var SCAN_MIN = 80;         // scan at least this many rows; more if the tab is longer
@@ -50,13 +51,14 @@ function doPost(e) {
   try { req = JSON.parse(e.postData.contents); }
   catch (err) { return respond({ ok: false, error: 'Bad JSON body' }); }
 
-  if (!req || req.token !== SHARED_TOKEN) {
-    return respond({ ok: false, error: 'Invalid token' });
-  }
+  if (!req) return respond({ ok: false, error: 'Bad JSON body' });
+  var denied = checkAccess(req);
+  if (denied) return respond(denied);
   try {
     var out;
     switch (req.action) {
       case 'ping':        out = { pong: true, version: VERSION }; break;
+      case 'setPin':      out = setPin(req); break;
       case 'fys':         out = listFYs(); break;
       case 'get':         out = getModel(req.fyId, req.tab); break;
       case 'addVariable': out = writeMonthCell(req, 'variable'); break;
@@ -74,6 +76,78 @@ function doPost(e) {
   } catch (err) {
     return respond({ ok: false, error: String(err && err.message || err) });
   }
+}
+
+// ─── access: 4-digit PIN ────────────────────────────────────────────────────
+/* The app opens with a 4-digit PIN, checked here on every request. The PIN is
+   stored only as a salted SHA-256 hash in Script Properties, never in the repo.
+   A 4-digit PIN is only safe because guesses are capped: after every 5 wrong
+   tries in a row the PIN is refused for 15 minutes, and after 10 it is refused
+   until the owner runs resetPinLock() in the editor — so a stranger with the URL
+   gets at most 10 guesses out of 10,000. A right PIN clears the count.
+   The long SHARED_TOKEN still works (shell testing, see CLAUDE.md); the app no
+   longer sends it. Forgot the PIN: run resetPin() in the editor, then the app
+   asks for a new one. */
+var PIN_SOFT_LIMIT = 5, PIN_HARD_LIMIT = 10, PIN_WAIT_MS = 15 * 60 * 1000;
+
+function checkAccess(req) {
+  if (req.token && req.token === SHARED_TOKEN && SHARED_TOKEN.indexOf('CHANGE_ME') !== 0) return null;
+  var props = PropertiesService.getScriptProperties();
+  var lock = LockService.getScriptLock();   // so parallel guesses can't race the counter
+  lock.waitLock(20000);
+  try {
+    var hash = props.getProperty('PIN_HASH');
+    if (!hash) {
+      // No PIN yet: the only thing allowed is choosing one.
+      return req.action === 'setPin' ? null
+        : { ok: false, code: 'NO_PIN', error: 'Choose a PIN first' };
+    }
+    var fails = Number(props.getProperty('PIN_FAILS') || 0);
+    var until = Number(props.getProperty('PIN_UNTIL') || 0);
+    if (fails >= PIN_HARD_LIMIT) return { ok: false, code: 'LOCKED', error: 'Locked after too many wrong PINs' };
+    if (Date.now() < until) return { ok: false, code: 'WAIT', until: until, error: 'Too many wrong PINs' };
+    if (/^\d{4}$/.test(String(req.pin || '')) &&
+        pinHash(props.getProperty('PIN_SALT'), String(req.pin)) === hash) {
+      if (fails) { props.deleteProperty('PIN_FAILS'); props.deleteProperty('PIN_UNTIL'); }
+      return null;
+    }
+    fails++;
+    props.setProperty('PIN_FAILS', String(fails));
+    if (fails >= PIN_HARD_LIMIT) return { ok: false, code: 'LOCKED', error: 'Locked after too many wrong PINs' };
+    if (fails % PIN_SOFT_LIMIT === 0) {
+      props.setProperty('PIN_UNTIL', String(Date.now() + PIN_WAIT_MS));
+      return { ok: false, code: 'WAIT', until: Date.now() + PIN_WAIT_MS, error: 'Too many wrong PINs' };
+    }
+    return { ok: false, code: 'WRONG', left: PIN_SOFT_LIMIT - (fails % PIN_SOFT_LIMIT), error: 'Wrong PIN' };
+  } finally { lock.releaseLock(); }
+}
+
+function pinHash(salt, pin) {
+  var bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, salt + ':' + pin, Utilities.Charset.UTF_8);
+  return Utilities.base64Encode(bytes);
+}
+
+// First PIN (allowed only while none is set) or a change (the caller already
+// passed checkAccess with the current PIN).
+function setPin(req) {
+  var pin = String(req.newPin || '');
+  if (!/^\d{4}$/.test(pin)) throw new Error('PIN must be 4 digits');
+  var props = PropertiesService.getScriptProperties();
+  var salt = Utilities.getUuid();
+  props.setProperties({ PIN_SALT: salt, PIN_HASH: pinHash(salt, pin) });
+  props.deleteProperty('PIN_FAILS'); props.deleteProperty('PIN_UNTIL');
+  return { pinSet: true };
+}
+
+// Run from the editor: lifts a lock-out, keeps the PIN.
+function resetPinLock() {
+  var props = PropertiesService.getScriptProperties();
+  props.deleteProperty('PIN_FAILS'); props.deleteProperty('PIN_UNTIL');
+}
+// Run from the editor: forgets the PIN; the app then asks for a new one.
+function resetPin() {
+  var props = PropertiesService.getScriptProperties();
+  ['PIN_HASH', 'PIN_SALT', 'PIN_FAILS', 'PIN_UNTIL'].forEach(function (k) { props.deleteProperty(k); });
 }
 
 function respond(obj) {
